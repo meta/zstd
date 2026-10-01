@@ -481,6 +481,9 @@ size_t ZSTD_getFrameHeader_advanced(ZSTD_FrameHeader* zfhPtr, const void* src, s
             assert(src != NULL);
             ZSTD_memcpy(hbuf, src, toCopy);
             if ( MEM_readLE32(hbuf) != ZSTD_MAGICNUMBER ) {
+#if defined(ZSTD_LEGACY_SUPPORT) && (ZSTD_LEGACY_SUPPORT>=1)
+                if (ZSTD_isLegacy(hbuf, 4)) return minInputSize;   /* legacy frames are supported too */
+#endif
                 /* not a zstd frame : let's check if it's a skippable frame */
                 MEM_writeLE32(hbuf, ZSTD_MAGIC_SKIPPABLE_START);
                 ZSTD_memcpy(hbuf, src, toCopy);
@@ -2206,8 +2209,10 @@ size_t ZSTD_decompressStream(ZSTD_DStream* zds, ZSTD_outBuffer* output, ZSTD_inB
             ZSTD_FALLTHROUGH;
 
         case zdss_loadHeader : {
-            /* Legacy dispatch and the one-shot decoder both start at istart.
-             * Equality means no header bytes came from an earlier call.
+            /* The one-shot decoder starts at istart, so it is only used when
+             * no header bytes came from an earlier call (equality below).
+             * Legacy dispatch instead replays the buffered header from
+             * headerBuffer, so it also handles headers split across calls.
              * Check istart first to avoid subtracting NULL on empty input. */
             int const headerFromThisCall = istart != NULL
                     && (size_t)(ip - istart) == zds->lhSize;
@@ -2224,8 +2229,7 @@ size_t ZSTD_decompressStream(ZSTD_DStream* zds, ZSTD_outBuffer* output, ZSTD_inB
             {   size_t const hSize = ZSTD_getFrameHeader_advanced(&zds->fParams, zds->headerBuffer, zds->lhSize, zds->format);
                 if (ZSTD_isError(hSize)) {
 #if defined(ZSTD_LEGACY_SUPPORT) && (ZSTD_LEGACY_SUPPORT>=1)
-                    U32 const legacyVersion = headerFromThisCall
-                            ? ZSTD_isLegacy(istart, (size_t)(iend-istart)) : 0;
+                    U32 const legacyVersion = ZSTD_isLegacy(zds->headerBuffer, zds->lhSize);
                     if (legacyVersion) {
                         ZSTD_DDict const* const ddict = useDDictSet ? NULL : ZSTD_getDDict(zds);
                         const void* const dict = ddict ? ZSTD_DDict_dictContent(ddict) : NULL;
@@ -2239,7 +2243,13 @@ size_t ZSTD_decompressStream(ZSTD_DStream* zds, ZSTD_outBuffer* output, ZSTD_inB
                                     zds->previousLegacyVersion, legacyVersion,
                                     dict, dictSize), "");
                         zds->legacyVersion = zds->previousLegacyVersion = legacyVersion;
-                        {   size_t const hint = ZSTD_decompressLegacyStream(zds->legacyContext, legacyVersion, output, input);
+                        {   /* the frame header may have been buffered by previous calls : replay it first */
+                            ZSTD_inBuffer header;
+                            size_t hint;
+                            header.src = zds->headerBuffer; header.size = zds->lhSize; header.pos = 0;
+                            FORWARD_IF_ERROR(ZSTD_decompressLegacyStream(zds->legacyContext, legacyVersion, output, &header), "");
+                            input->pos = (size_t)(ip - (const char*)(input->src));
+                            hint = ZSTD_decompressLegacyStream(zds->legacyContext, legacyVersion, output, input);
                             if (hint==0) zds->streamStage = zdss_init;   /* or stay in stage zdss_loadHeader */
                             return hint;
                     }   }
