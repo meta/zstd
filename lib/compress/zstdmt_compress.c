@@ -1043,9 +1043,18 @@ static void ZSTDMT_waitForAllJobsCompleted(ZSTDMT_CCtx* mtctx)
     }
 }
 
+void ZSTDMT_waitForPendingJobs(ZSTDMT_CCtx* mtctx)
+{
+    if (mtctx->allJobsCompleted == 0) {   /* previous compression not correctly finished */
+        ZSTDMT_waitForAllJobsCompleted(mtctx);
+        ZSTDMT_releaseAllJobResources(mtctx); /* Will set allJobsCompleted to 1 */
+    }
+}
+
 size_t ZSTDMT_freeCCtx(ZSTDMT_CCtx* mtctx)
 {
     if (mtctx==NULL) return 0;   /* compatible with free on NULL */
+    ZSTDMT_waitForPendingJobs(mtctx);  /* a shared pool is not stopped below */
     if (!mtctx->providedFactory)
         POOL_free(mtctx->factory);   /* stop and free worker threads */
     ZSTDMT_releaseAllJobResources(mtctx);  /* release job resources into pools first */
@@ -1262,16 +1271,12 @@ size_t ZSTDMT_initCStream_internal(
     assert(!((dict) && (cdict)));  /* either dict or cdict, not both */
 
     /* init */
+    ZSTDMT_waitForPendingJobs(mtctx);   /* before resizing the pools they use */
     if (params.nbWorkers != mtctx->params.nbWorkers)
         FORWARD_IF_ERROR( ZSTDMT_resize(mtctx, (unsigned)params.nbWorkers) , "");
 
     if (params.jobSize != 0 && params.jobSize < ZSTDMT_JOBSIZE_MIN) params.jobSize = ZSTDMT_JOBSIZE_MIN;
     if (params.jobSize > (size_t)ZSTDMT_JOBSIZE_MAX) params.jobSize = (size_t)ZSTDMT_JOBSIZE_MAX;
-
-    if (mtctx->allJobsCompleted == 0) {   /* previous compression not correctly finished */
-        ZSTDMT_waitForAllJobsCompleted(mtctx);
-        ZSTDMT_releaseAllJobResources(mtctx); /* Will set allJobsCompleted to 1 */
-    }
 
     mtctx->params = params;
     mtctx->frameContentSize = pledgedSrcSize;
