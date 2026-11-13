@@ -2128,7 +2128,7 @@ static size_t ZSTD_decompressContinueStream(
         size_t const dstSize = isSkipFrame ? 0 : (size_t)(oend - *op);
         size_t const decodedSize = ZSTD_decompressContinue(zds, *op, dstSize, src, srcSize);
         FORWARD_IF_ERROR(decodedSize, "");
-        *op += decodedSize;
+        *op = (char*)ZSTD_maybeNullPtrAdd(*op, (ptrdiff_t)decodedSize);
         /* Flushing is not needed. */
         zds->streamStage = zdss_read;
         assert(*op <= oend);
