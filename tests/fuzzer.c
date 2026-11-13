@@ -1167,6 +1167,109 @@ static void test_decompressZeroByteHistory(unsigned tnb)
     DISPLAYLEVEL(3, "OK \n");
 }
 
+/* Decodes src with ZSTD_decompressStream() using a single input buffer, whose
+ * size is first limited to `split` bytes and then extended to srcSize, so the
+ * second call continues at in.pos == split. Returns the last streaming result.
+ * Output is written to dst (of capacity dstCap), and its size to *dstSize. */
+static size_t FUZ_decompressStreamSplit(ZSTD_DCtx* dctx, const void* src, size_t srcSize,
+                                        size_t split, void* dst, size_t dstCap, size_t* dstSize)
+{
+    ZSTD_inBuffer in = { src, split, 0 };
+    ZSTD_outBuffer out = { dst, dstCap, 0 };
+    size_t result;
+    CHECK_Z(ZSTD_DCtx_reset(dctx, ZSTD_reset_session_and_parameters));
+    result = ZSTD_decompressStream(dctx, &out, &in);
+    if (!ZSTD_isError(result) && split < srcSize) {
+        in.size = srcSize;
+        result = ZSTD_decompressStream(dctx, &out, &in);
+    }
+    *dstSize = out.pos;
+    return result;
+}
+
+/* Checks that streaming decompression does not depend on where the input is
+ * split between two calls (in particular, in the middle of the frame header).
+ * Decodes with every split point and compares against decoding with no split.
+ * If expected == NULL, the stream must be rejected, else it must decode to expected. */
+static void FUZ_checkStreamSplits(const void* src, size_t srcSize,
+                                  const void* expected, size_t expectedSize)
+{
+    /* Large enough for the content size claimed by embeddedFrame below, since
+     * the single-pass fast path is only taken if the output has room for it. */
+    size_t const outCapacity = 128 KB;
+    ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+    BYTE* const refOut = (BYTE*)malloc(outCapacity);
+    BYTE* const out = (BYTE*)malloc(outCapacity);
+    size_t refSize, outSize, split, ref;
+    CHECK(dctx != NULL && refOut != NULL && out != NULL);
+
+    ref = FUZ_decompressStreamSplit(dctx, src, srcSize, srcSize, refOut, outCapacity, &refSize);
+    if (expected == NULL) {
+        CHECK(ZSTD_isError(ref));
+    } else {
+        CHECK_EQ(ref, 0);
+        CHECK_EQ(refSize, expectedSize);
+        CHECK(memcmp(refOut, expected, expectedSize) == 0);
+    }
+
+    for (split = 0; split < srcSize; ++split) {
+        size_t const result = FUZ_decompressStreamSplit(dctx, src, srcSize, split, out, outCapacity, &outSize);
+        CHECK_EQ(ZSTD_getErrorCode(result), ZSTD_getErrorCode(ref));
+        if (!ZSTD_isError(result)) CHECK_EQ(result, ref);
+        CHECK_EQ(outSize, refSize);
+        CHECK(memcmp(out, refOut, refSize) == 0);
+    }
+    free(out);
+    free(refOut);
+    ZSTD_freeDCtx(dctx);
+}
+
+/* Guards against ZSTD_decompressStream() mishandling a frame header that is
+ * split across calls. The streaming decoder has fast paths (decode the whole
+ * frame in one pass, detect legacy frames) that inspect the current input
+ * buffer from its start. They are only valid when the frame header starts in
+ * this call. After a split header, they would instead look at the middle of
+ * the frame, so bytes of a malformed frame that look like the start of another
+ * frame could be decoded as if they were a frame.
+ *
+ * Each case is decoded at every split point, and must behave exactly like
+ * decoding without a split. The malformed frames are crafted so that a wrong
+ * fast path would accept them, which makes the comparison fail. A valid frame
+ * checks that normal frames are unaffected. */
+static void test_decompressStreamSplitHeader(unsigned tnb)
+{
+    /* Malformed: the header says the frame uses a dictionary (dictID field)
+     * that is not provided. The 12 bytes after the first 5 bytes (magic + FHD
+     * 0xE3, which selects 4-byte dictID and 8-byte content size) also encode
+     * a complete valid empty frame: magic, FHD 0x20, content size 0, and an
+     * empty last block. Decoding that from a split at byte 5 is wrong. */
+    static const BYTE embeddedFrame[] = {
+        0x28, 0xB5, 0x2F, 0xFD, 0xE3,
+        0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    /* Malformed: FHD 0x08 sets a reserved bit, which is reported once the
+     * 6-byte header is available. The bytes after the first 5 start with the
+     * magic number of a legacy (v0.7) frame. Only matters when the library
+     * is built with legacy support, and must not be detected as a legacy
+     * frame since the frame did not start there. */
+    static const BYTE embeddedLegacy[] = {
+        0x28, 0xB5, 0x2F, 0xFD, 0x08,
+        0x27, 0xB5, 0x2F, 0xFD, 0x00, 0x00, 0x00, 0x00
+    };
+    BYTE source[257];
+    BYTE compressed[ZSTD_COMPRESSBOUND(sizeof(source))];
+    size_t compressedSize, i;
+
+    DISPLAYLEVEL(3, "test%3u : streaming frame header split across calls : ", tnb);
+    FUZ_checkStreamSplits(embeddedFrame, sizeof(embeddedFrame), NULL, 0);
+    FUZ_checkStreamSplits(embeddedLegacy, sizeof(embeddedLegacy), NULL, 0);
+
+    for (i = 0; i < sizeof(source); ++i) source[i] = (BYTE)(i * 23);
+    CHECK_VAR(compressedSize, ZSTD_compress(compressed, sizeof(compressed), source, sizeof(source), 1));
+    FUZ_checkStreamSplits(compressed, compressedSize, source, sizeof(source));
+    DISPLAYLEVEL(3, "OK \n");
+}
+
 static unsigned test_histCountWksp(unsigned seed, unsigned testNb)
 {
     static const unsigned symLowLimits[] =  {   0,  27,   0,   0,  27,  42,   0,   0, 27, 42, 27, 42 };
@@ -2904,6 +3007,8 @@ static int basicUnitTests(U32 const seed, double compressibility)
     test_decompressContinueWithoutBegin(testNb++);
 
     test_decompressZeroByteHistory(testNb++);
+
+    test_decompressStreamSplitHeader(testNb++);
 
     test_setCParams(testNb++);
 
