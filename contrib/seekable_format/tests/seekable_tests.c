@@ -293,6 +293,132 @@ _cleanup:
     return success;
 }
 
+/* Source that can fail a single read or seek on demand. calls is bounded so
+ * that a regression fails instead of hanging; it is reset for each request. */
+enum { LIMITED_SOURCE_MAX_CALLS = 128 };
+typedef enum { limitedFaultNone, limitedFaultRead, limitedFaultSeek } limitedFault_t;
+typedef struct {
+    buffWrapperWithTotal_t buff;
+    unsigned calls;
+    limitedFault_t fault;
+} limitedSource_t;
+
+static int readLimitedSource(void* opaque, void* buffer, size_t n)
+{
+    limitedSource_t* const src = (limitedSource_t*)opaque;
+    int result;
+    if (++src->calls > LIMITED_SOURCE_MAX_CALLS) return -1;
+    result = readBuffWithTotal(&src->buff, buffer, n);
+    /* A failed real read may still have consumed source bytes. */
+    if (result >= 0 && src->fault == limitedFaultRead) {
+        src->fault = limitedFaultNone;
+        return -1;
+    }
+    return result;
+}
+
+static int seekLimitedSource(void* opaque, long long offset, int origin)
+{
+    limitedSource_t* const src = (limitedSource_t*)opaque;
+    if (++src->calls > LIMITED_SOURCE_MAX_CALLS) return -1;
+    if (src->fault == limitedFaultSeek) {
+        src->fault = limitedFaultNone;
+        return -1;
+    }
+    return seekBuffWithTotal(&src->buff, offset, origin);
+}
+
+static size_t decompressFrameWithBudget(ZSTD_seekable* stream, limitedSource_t* src,
+                                        void* dst, size_t len, unsigned frame)
+{
+    src->calls = 0;
+    return ZSTD_seekable_decompressFrame(stream, dst, len, frame);
+}
+
+/* A failed request must discard the cached frame, so that the next request
+ * seeks and restarts instead of resuming from stale decoder or source state.
+ * Frame 0 is "ABCDEFGHIJ" (declared as declaredSize bytes), frame 1 is "xyz". */
+static int testRecoveryAfterErrors(unsigned declaredSize, int expectIOErrors)
+{
+    char const data[] = "ABCDEFGHIJ";
+    char const tail[] = "xyz";
+    size_t const dataSize = sizeof(data) - 1;
+    size_t const tailSize = sizeof(tail) - 1;
+    unsigned char archive[512];
+    char out[64];
+    size_t cSize;
+    size_t tailCSize;
+    size_t status = 0;
+    char const* operation = "construct archive";
+    ZSTD_frameLog* log = ZSTD_seekable_createFrameLog(1);
+    ZSTD_seekable* const stream = ZSTD_seekable_create();
+    ZSTD_outBuffer seekTable = {archive, sizeof(archive), 0};
+    limitedSource_t src = {{archive, 0, 0, 0}, 0, limitedFaultNone};
+    int failed = 1;
+    if (log == NULL || stream == NULL) goto cleanup;
+
+    cSize = ZSTD_compress(archive, sizeof(archive), data, dataSize, 1);
+    if (ZSTD_isError(cSize)) { status = cSize; goto cleanup; }
+    status = ZSTD_seekable_logFrame(log, (unsigned)cSize, declaredSize,
+                                   (unsigned)XXH64(data, dataSize, 0));
+    if (ZSTD_isError(status)) goto cleanup;
+    tailCSize = ZSTD_compress(archive + cSize, sizeof(archive) - cSize,
+                             tail, tailSize, 1);
+    if (ZSTD_isError(tailCSize)) { status = tailCSize; goto cleanup; }
+    status = ZSTD_seekable_logFrame(log, (unsigned)tailCSize, (unsigned)tailSize,
+                                   (unsigned)XXH64(tail, tailSize, 0));
+    if (ZSTD_isError(status)) goto cleanup;
+    seekTable.pos = cSize + tailCSize;
+    status = ZSTD_seekable_writeSeekTable(log, &seekTable);
+    if (status != 0) goto cleanup;
+
+    src.buff.size = seekTable.pos;
+    operation = "initialize source";
+    {   ZSTD_seekable_customFile const custom = {&src, readLimitedSource, seekLimitedSource};
+        status = ZSTD_seekable_initAdvanced(stream, custom);
+    }
+    if (ZSTD_isError(status)) goto cleanup;
+
+    if (!expectIOErrors) {
+        /* The completed frame is shorter than declared. */
+        operation = "reject frame-size mismatch";
+        status = decompressFrameWithBudget(stream, &src, out, sizeof(out), 0);
+        if (ZSTD_getErrorCode(status) != ZSTD_error_corruption_detected) goto cleanup;
+        operation = "read tail after corruption";
+        status = decompressFrameWithBudget(stream, &src, out, sizeof(out), 1);
+        if (status != tailSize || memcmp(out, tail, tailSize) != 0) goto cleanup;
+        operation = "reject mismatch after recovery";
+        status = decompressFrameWithBudget(stream, &src, out, sizeof(out), 0);
+        if (ZSTD_getErrorCode(status) != ZSTD_error_corruption_detected) goto cleanup;
+    } else {
+        limitedFault_t fault;
+        for (fault = limitedFaultRead; fault <= limitedFaultSeek; ++fault) {
+            /* Select the later frame first, so the failed request must
+             * seek backwards and restart rather than reuse its state. */
+            operation = "prepare I/O retry";
+            status = decompressFrameWithBudget(stream, &src, out, sizeof(out), 1);
+            if (status != tailSize || memcmp(out, tail, tailSize) != 0) goto cleanup;
+            src.fault = fault;
+            operation = fault == limitedFaultRead ? "inject read failure" : "inject seek failure";
+            status = decompressFrameWithBudget(stream, &src, out, sizeof(out), 0);
+            if (ZSTD_getErrorCode(status) != ZSTD_error_seekableIO) goto cleanup;
+            operation = fault == limitedFaultRead ? "retry failed read" : "retry failed seek";
+            status = decompressFrameWithBudget(stream, &src, out, sizeof(out), 0);
+            if (status != dataSize || memcmp(out, data, dataSize) != 0) goto cleanup;
+        }
+    }
+    failed = 0;
+
+cleanup:
+    if (failed) {
+        fprintf(stderr, "error recovery (declared %u, I/O faults %d), %s: %s (%zu)\n",
+                declaredSize, expectIOErrors, operation, ZSTD_getErrorName(status), status);
+    }
+    ZSTD_seekable_freeFrameLog(log);
+    ZSTD_seekable_free(stream);
+    return failed;
+}
+
 /* Basic unit tests for zstd seekable format */
 int main(int argc, const char** argv)
 {
@@ -827,6 +953,11 @@ int main(int argc, const char** argv)
             if (failed) goto _test_error;
         }
     }
+    printf("Success!\n");
+
+    printf("Test %u - recover after decompression errors: ", testNb++);
+    if (testRecoveryAfterErrors(11, 0)) goto _test_error;
+    if (testRecoveryAfterErrors(10, 1)) goto _test_error;
     printf("Success!\n");
 
     printf("Test %u - repeated initialization across source types: ", testNb++);
