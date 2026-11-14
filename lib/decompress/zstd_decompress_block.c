@@ -40,6 +40,7 @@
 #error "Cannot force the use of the short and the long ZSTD_decompressSequences variants!"
 #endif
 
+#define PREFETCH_DISTANCE (8*CACHELINE_SIZE)
 
 /*_*******************************************************
 *  Memory operations
@@ -1509,6 +1510,8 @@ ZSTD_decompressSequences_bodySplitLitBuffer( ZSTD_DCtx* dctx,
     const BYTE* const prefixStart = (const BYTE*) (dctx->prefixStart);
     const BYTE* const vBase = (const BYTE*) (dctx->virtualStart);
     const BYTE* const dictEnd = (const BYTE*) (dctx->dictEnd);
+    int counter = 0;
+    const int kPrefetchRatio = 16;
     DEBUGLOG(5, "ZSTD_decompressSequences_bodySplitLitBuffer (%i seqs)", nbSeq);
 
     /* Literals are split between internal buffer & output buffer */
@@ -1596,6 +1599,12 @@ ZSTD_decompressSequences_bodySplitLitBuffer( ZSTD_DCtx* dctx,
                 sequence = ZSTD_decodeSequence(&seqState, isLongOffset, nbSeq==1);
                 if (litPtr + sequence.litLength > dctx->litBufferEnd) break;
                 {   size_t const oneSeqSize = ZSTD_execSequenceSplitLitBuffer(op, oend, litPtr + sequence.litLength - WILDCOPY_OVERLENGTH, sequence, &litPtr, litBufferEnd, prefixStart, vBase, dictEnd);
+                    /* Don't prefetch  too often, because it is actually slower */
+                    counter++;
+                    if ((counter / kPrefetchRatio) == 0) {
+                      PREFETCH_L1(op+PREFETCH_DISTANCE);
+                      PREFETCH_L1(litPtr+PREFETCH_DISTANCE);
+                    }
 #if defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) && defined(FUZZING_ASSERT_VALID_SEQUENCE)
                     assert(!ZSTD_isError(oneSeqSize));
                     ZSTD_assertValidSequence(dctx, op, oend, sequence, prefixStart, vBase);
@@ -1658,6 +1667,8 @@ ZSTD_decompressSequences_bodySplitLitBuffer( ZSTD_DCtx* dctx,
             for ( ; nbSeq ; nbSeq--) {
                 seq_t const sequence = ZSTD_decodeSequence(&seqState, isLongOffset, nbSeq==1);
                 size_t const oneSeqSize = ZSTD_execSequence(op, oend, sequence, &litPtr, litBufferEnd, prefixStart, vBase, dictEnd);
+                PREFETCH_L1(op+PREFETCH_DISTANCE);
+                PREFETCH_L1(litPtr+PREFETCH_DISTANCE);
 #if defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) && defined(FUZZING_ASSERT_VALID_SEQUENCE)
                 assert(!ZSTD_isError(oneSeqSize));
                 ZSTD_assertValidSequence(dctx, op, oend, sequence, prefixStart, vBase);
@@ -1754,6 +1765,8 @@ ZSTD_decompressSequences_body(ZSTD_DCtx* dctx,
         for ( ; nbSeq ; nbSeq--) {
             seq_t const sequence = ZSTD_decodeSequence(&seqState, isLongOffset, nbSeq==1);
             size_t const oneSeqSize = ZSTD_execSequence(op, oend, sequence, &litPtr, litEnd, prefixStart, vBase, dictEnd);
+            PREFETCH_L1(op+PREFETCH_DISTANCE);
+            PREFETCH_L1(litPtr+PREFETCH_DISTANCE);
 #if defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) && defined(FUZZING_ASSERT_VALID_SEQUENCE)
             assert(!ZSTD_isError(oneSeqSize));
             ZSTD_assertValidSequence(dctx, op, oend, sequence, prefixStart, vBase);
