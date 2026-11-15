@@ -112,6 +112,15 @@ case "$OS" in
     ;;
 esac
 
+# Native Windows builds (MSVC, MinGW) define _WIN32; Cygwin builds don't
+isNativeWindows=false
+if [ "$isWindows" = true ]; then
+  case "$UNAME" in
+    CYGWIN*) ;;
+    *) isNativeWindows=true ;;
+  esac
+fi
+
 case "$UNAME" in
   Darwin) MD5SUM="md5 -r" ;;
   NetBSD) MD5SUM="md5 -n" ;;
@@ -828,22 +837,24 @@ zstd -f --filelist=tmp_symLink
 test -f tmp2.zst
 test -f tmp1.zst
 
-# CR is only stripped when _WIN32 is defined: MSVC and MinGW, but not Cygwin
-stripsCR=false
-if [ "$isWindows" = true ] ; then
-    case "$UNAME" in
-      MINGW*|MSYS*) stripsCR=true ;;
-    esac
-fi
-
-if [ "$stripsCR" = true ] ; then
-    println "test : file list with Windows CRLF line endings, --filelist=FILE" # (#4349)
-    rm -f *.zst
-    printf 'tmp1\r\ntmp2\r\n' > tmp_crlfList
-    zstd -f --filelist=tmp_crlfList
+println "test : file list with CR at the end of lines, --filelist=FILE"
+# The list is read in binary mode. Native Windows builds drop the CR of CRLF line endings;
+# other builds keep it, since CR is a valid filename character there.
+rm -f *.zst
+if [ "$isNativeWindows" = true ]; then
+    printf 'tmp1\r\ntmp2\r\n' > tmp_crList
+    zstd -f --filelist=tmp_crList
     test -f tmp1.zst
     test -f tmp2.zst
+else
+    CR=$(printf '\r')
+    echo "CR" > "tmpCR$CR"
+    printf 'tmpCR\r\n' > tmp_crList
+    zstd -f --filelist=tmp_crList
+    test -f "tmpCR$CR.zst"
+    rm -f "tmpCR$CR" "tmpCR$CR.zst"
 fi
+rm -f tmp_crList
 
 println "test : compress multiple files reading them from multiple files, --filelist=FILE"
 rm -f *.zst
