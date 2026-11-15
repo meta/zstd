@@ -16,6 +16,12 @@ datagen() {
     "$DATAGEN_BIN" "$@"
 }
 
+# zstd is an alias rather than a function: POSIX doesn't require "VAR=value function"
+# to export VAR to the commands run by the function.
+# bash only expands aliases in a script in POSIX mode (started as sh), or with expand_aliases.
+# Without it (e.g. `bash playTests.sh`), zstd would silently run the zstd found in PATH.
+# shellcheck disable=SC2039,SC3044 # shopt only runs in bash
+if [ -n "${BASH_VERSION-}" ]; then shopt -s expand_aliases; fi
 alias zstd='$EXE_PREFIX $ZSTD_BIN'
 
 sudoZstd() {
