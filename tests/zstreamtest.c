@@ -41,6 +41,9 @@
 #include "util.h"
 #include "timefn.h"       /* UTIL_time_t, UTIL_clockSpanMicro, UTIL_getTime */
 #include "external_matchfinder.h"   /* zstreamSequenceProducer, EMF_testCase */
+#ifndef ZSTD_NO_TRACE
+#  include "zstd_trace.h"
+#endif
 
 /*-************************************
  *  Constants
@@ -74,6 +77,26 @@ static UTIL_time_t g_displayClock = UTIL_TIME_INITIALIZER;
             if (g_displayLevel>=4) fflush(stderr); } }
 
 static U64 g_clockTime = 0;
+
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+/* Only record traces for the context used by the frame-completion tests. */
+static ZSTD_DCtx const* g_frameEndTraceDCtx;
+static unsigned g_frameEndTraceCount;
+static ZSTD_Trace g_frameEndTrace;
+
+ZSTD_TraceCtx ZSTD_trace_decompress_begin(ZSTD_DCtx const* dctx)
+{
+    return dctx == g_frameEndTraceDCtx;
+}
+
+void ZSTD_trace_decompress_end(ZSTD_TraceCtx ctx, ZSTD_Trace const* trace)
+{
+    if (ctx) {
+        ++g_frameEndTraceCount;
+        g_frameEndTrace = *trace;
+    }
+}
+#endif
 
 
 /*-*******************************************************
@@ -258,6 +281,159 @@ static U32 badParameters(ZSTD_CCtx* zc, ZSTD_parameters const savedParams)
     CHECK_RET(8, params.fParams.contentSizeFlag != savedParams.fParams.contentSizeFlag, "contentSizeFlag");
     CHECK_RET(9, params.fParams.noDictIDFlag != savedParams.fParams.noDictIDFlag, "noDictIDFlag");
     return 0;
+}
+
+/* Exercise the same small frame through all frame-decompression entry points.
+ * Byte-at-a-time input prevents decompressStream() taking its one-shot shortcut. */
+static int FUZ_checkFrameCompletion(U32 seed, int testNb,
+                                   const BYTE* frame, size_t frameSize,
+                                   ZSTD_ErrorCode expectedError, int ignoreChecksum)
+{
+    ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+    BYTE out[16];
+    int api;
+    int result = 1;
+    CHECK(dctx == NULL, "memory allocation failure");
+
+    for (api = 0; api < 6; ++api) {
+        size_t r = 0;
+        size_t consumed = 0;
+        size_t produced = 0;
+        /* Buffered streaming can exhaust its FCS-sized internal output buffer
+         * before reaching the final size check. Stable-output streaming below
+         * has enough room and must reach corruption_detected at frame end. */
+        ZSTD_ErrorCode const apiError = api == 3 && (frame[4] & 0x20) && frame[5] == 4
+                                      ? ZSTD_error_dstSize_tooSmall : expectedError;
+        CHECK_Z(ZSTD_DCtx_reset(dctx, ZSTD_reset_session_and_parameters));
+        CHECK_Z(ZSTD_DCtx_setParameter(dctx, ZSTD_d_forceIgnoreChecksum, ignoreChecksum));
+        if (api >= 4)
+            CHECK_Z(ZSTD_DCtx_setParameter(dctx, ZSTD_d_stableOutBuffer, 1));
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+        g_frameEndTraceDCtx = dctx;
+        g_frameEndTraceCount = 0;
+#endif
+        if (api == 0) {
+            r = ZSTD_decompressDCtx(dctx, out, sizeof(out), frame, frameSize);
+            if (!ZSTD_isError(r)) {
+                consumed = frameSize;
+                produced = r;
+            }
+        } else if (api == 1) {
+            CHECK_Z(ZSTD_decompressBegin(dctx));
+            while (ZSTD_nextSrcSizeToDecompress(dctx) != 0) {
+                size_t const needed = ZSTD_nextSrcSizeToDecompress(dctx);
+                CHECK(needed > frameSize - consumed, "truncated bufferless test frame");
+                r = ZSTD_decompressContinue(dctx, out + produced, sizeof(out) - produced,
+                                            frame + consumed, needed);
+                consumed += needed;
+                if (ZSTD_isError(r)) break;
+                produced += r;
+            }
+        } else {
+            ZSTD_inBuffer input = { frame, api == 2 || api == 4 ? frameSize : 0, 0 };
+            ZSTD_outBuffer output = { out, sizeof(out), 0 };
+            do {
+                size_t const oldInput = input.pos;
+                size_t const oldOutput = output.pos;
+                if (input.size < frameSize) ++input.size;
+                r = ZSTD_decompressStream(dctx, &output, &input);
+                CHECK(!ZSTD_isError(r) && r != 0 && input.size == frameSize
+                      && input.pos == oldInput && output.pos == oldOutput,
+                      "streaming made no progress");
+            } while (!ZSTD_isError(r) && r != 0);
+            consumed = input.pos;
+            produced = output.pos;
+        }
+        CHECK(ZSTD_getErrorCode(r) != apiError,
+              "API %d: expected %s, got %s", api,
+              ZSTD_getErrorString(apiError), ZSTD_getErrorName(r));
+        if (expectedError == ZSTD_error_no_error) {
+            CHECK(consumed != frameSize || produced != 5 || memcmp(out, "hello", 5) != 0,
+                  "API %d: incomplete or incorrect frame", api);
+        }
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+        CHECK(g_frameEndTraceCount != (unsigned)(expectedError == ZSTD_error_no_error),
+              "API %d: expected %u completed traces, got %u", api,
+              (unsigned)(expectedError == ZSTD_error_no_error), g_frameEndTraceCount);
+        if (g_frameEndTraceCount) {
+            int const streaming = api == 1 || api == 3 || api == 5
+                               || ((api == 2 || api == 4) && !(frame[4] & 0x20));
+            CHECK(g_frameEndTrace.version != ZSTD_VERSION_NUMBER
+                  || g_frameEndTrace.dctx != dctx
+                  || g_frameEndTrace.streaming != streaming
+                  || g_frameEndTrace.uncompressedSize != 5
+                  || g_frameEndTrace.compressedSize != frameSize,
+                  "API %d: incorrect frame-completion trace (compressed size %u, expected %u)",
+                  api, (unsigned)g_frameEndTrace.compressedSize, (unsigned)frameSize);
+        }
+#endif
+    }
+    result = 0;
+_output_error:
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+    g_frameEndTraceDCtx = NULL;
+#endif
+    ZSTD_freeDCtx(dctx);
+    return result;
+}
+
+static int FUZ_testFrameCompletion(U32 seed, int testNb)
+{
+    /* Two raw blocks decode to "hello". Each fits even when FCS is 4, so
+     * the overflow case reaches the frame-content-size check at frame end. */
+    static const BYTE prefix[] = {
+        0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x05,
+        0x10, 0, 0, 'h', 'e', 0x18, 0, 0, 'l', 'l', 'o'
+    };
+    static const struct {
+        BYTE tail[8];
+        size_t size;
+        int corrupt;
+    } cases[] = {
+        { { 0x01, 0, 0 },                         3, 0 }, /* empty last raw */
+        { { 0x03, 0, 0, 'x' },                    4, 0 }, /* empty last RLE */
+        { { 0x15, 0, 0, 0, 0 },                  5, 0 }, /* valid empty compressed */
+        { { 0x00, 0, 0, 0x01, 0, 0 },            6, 0 }, /* empty non-last raw */
+        { { 0x02, 0, 0, 'x', 0x01, 0, 0 },       7, 0 }, /* empty non-last RLE */
+        { { 0x14, 0, 0, 0, 0, 0x01, 0, 0 },     8, 0 }, /* empty non-last compressed */
+        { { 0x05, 0, 0 },                         3, 1 }, /* missing compressed payload */
+        { { 0x04, 0, 0, 0x01, 0, 0 },            6, 1 }, /* same, non-last */
+        { { 0x0d, 0, 0, 0 },                      4, 1 }, /* truncated compressed payload */
+    };
+    size_t i;
+    int contentSize;
+    int checksum;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        /* 3 selects unknown FCS; 4 and 6 mismatch the actual size of 5. */
+        for (contentSize = 3; contentSize <= 6; ++contentSize) {
+            /* No checksum, valid checksum, corrupt checksum, or ignore it. */
+            for (checksum = 0; checksum < 4; ++checksum) {
+                BYTE frame[32];
+                size_t frameSize = sizeof(prefix) + cases[i].size;
+                ZSTD_ErrorCode expectedError = ZSTD_error_no_error;
+                memcpy(frame, prefix, sizeof(prefix));
+                frame[4] = (BYTE)((contentSize == 3 ? 0 : 0x20) | (checksum ? 4 : 0));
+                frame[5] = (BYTE)(contentSize == 3 ? 0 : contentSize);
+                memcpy(frame + sizeof(prefix), cases[i].tail, cases[i].size);
+                if (checksum) {
+                    U32 const hash = (U32)XXH64("hello", 5, 0);
+                    MEM_writeLE32(frame + frameSize, hash ^ (U32)(checksum >= 2));
+                    frameSize += 4;
+                }
+                if (cases[i].corrupt || contentSize == 4 || contentSize == 6)
+                    expectedError = ZSTD_error_corruption_detected;
+                else if (checksum == 2)
+                    expectedError = ZSTD_error_checksum_wrong;
+                CHECK(FUZ_checkFrameCompletion(seed, testNb, frame, frameSize,
+                                                expectedError, checksum == 3),
+                      "frame completion: case %u, FCS %d, checksum %d",
+                      (unsigned)i, contentSize == 3 ? 0 : contentSize, checksum);
+            }
+        }
+    }
+    return 0;
+_output_error:
+    return 1;
 }
 
 static int basicUnitTests(U32 seed, double compressibility, int bigTests)
@@ -2689,30 +2865,8 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
     DISPLAYLEVEL(3, "OK \n");
 #endif
 
-    DISPLAYLEVEL(3, "test%3i : reject empty last block that underflows frame content size : ", testNb++);
-    {   /* Frame declares 1,000,000 bytes, but only decodes 5 bytes before an
-         * empty last block ends it. Streaming must report corruption. */
-        static const BYTE frame[] = {
-            0x28, 0xb5, 0x2f, 0xfd,                    /* magic number */
-            0xa0,                                      /* single segment, 4-byte FCS */
-            0x40, 0x42, 0x0f, 0x00,                    /* frame content size: 1,000,000 */
-            0x28, 0x00, 0x00, 'h', 'e', 'l', 'l', 'o', /* non-last raw block, 5 bytes */
-            0x01, 0x00, 0x00,                          /* empty last raw block */
-        };
-        ZSTD_DStream* const dstream = ZSTD_createDStream();
-        BYTE out[16];
-        ZSTD_inBuffer input;
-        ZSTD_outBuffer output;
-        size_t r;
-        CHECK(dstream == NULL, "memory allocation failure");
-        input.src = frame; input.size = sizeof(frame); input.pos = 0;
-        output.dst = out; output.size = sizeof(out); output.pos = 0;
-        r = ZSTD_decompressStream(dstream, &output, &input);
-        ZSTD_freeDStream(dstream);
-        CHECK(!ZSTD_isError(r), "empty last block bypassed the content size check");
-        CHECK(ZSTD_getErrorCode(r) != ZSTD_error_corruption_detected,
-              "unexpected error : %s", ZSTD_getErrorName(r));
-    }
+    DISPLAYLEVEL(3, "test%3i : frame-completion checks and tracing : ", testNb++);
+    CHECK(FUZ_testFrameCompletion(seed, testNb), "frame-completion tests failed");
     DISPLAYLEVEL(3, "OK \n");
 
 _end:
