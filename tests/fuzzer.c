@@ -2365,6 +2365,313 @@ static void FUZ_mdict_testPrefixCompatibility(void)
     CHECK_Z(ZSTD_freeDDict(b));
 }
 
+/* ---------------------------------------------------------------------------
+ * Prefix lifetime and session reset of the one-shot decompression functions.
+ * These test the contracts documented in zstd.h for ZSTD_DCtx_refPrefix(),
+ * ZSTD_DCtx_reset() and ZSTD_decompressDCtx() / _usingDict() / _usingDDict().
+ *
+ * Prefix tests use the fixture below: the frame copies 8 bytes out of the
+ * prefix, so it decodes to "AAAAAAAA" if and only if the prefix is in use.
+ * Unlike compressor-generated data it cannot degrade to a literals-only block
+ * and pass by accident when the prefix has been lost.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    ZSTD_DCtx* dctx;
+    BYTE dict[44];      /* formatted dictionary "A"; its last 16 bytes are the raw content */
+    BYTE frame[32];     /* decodes to "AAAAAAAA" only when dictionary A is available */
+    size_t frameSize;
+    int asFullDict;     /* reference the formatted dictionary instead of its raw content */
+} FUZ_pfx;
+
+static void FUZ_pfx_init(FUZ_pfx* p, unsigned asFullDict)
+{
+    p->dctx = ZSTD_createDCtx();
+    CHECK(p->dctx != NULL);
+    FUZ_mdict_makeDict(p->dict, 1111, 'A');
+    p->frameSize = FUZ_mdict_makeFrame(p->frame, 0, 0);
+    p->asFullDict = (int)asFullDict;
+}
+
+static void FUZ_pfx_ref(FUZ_pfx* p)
+{
+    if (p->asFullDict) {
+        CHECK_Z(ZSTD_DCtx_refPrefix_advanced(p->dctx, p->dict, 44, ZSTD_dct_fullDict));
+    } else {
+        CHECK_Z(ZSTD_DCtx_refPrefix(p->dctx, p->dict + 28, 16));
+    }
+}
+
+/* Is the prefix still referenced? Probes with ZSTD_decompressDCtx(),
+ * so it consumes the prefix: call it last, and reference again before reuse.
+ * A frame that needs a missing dictionary must not decode to "AAAAAAAA". */
+static int FUZ_pfx_isSet(FUZ_pfx* p)
+{
+    BYTE out[8];
+    size_t const r = ZSTD_decompressDCtx(p->dctx, out, sizeof(out), p->frame, p->frameSize);
+    return r == 8 && memcmp(out, "AAAAAAAA", 8) == 0;
+}
+
+/* Begin streaming a frame, but stop after `size` bytes of input. */
+static void FUZ_pfx_startStream(ZSTD_DCtx* dctx, const BYTE* src, size_t size)
+{
+    BYTE out[32];
+    ZSTD_inBuffer in = {src, size, 0};
+    ZSTD_outBuffer ob = {out, sizeof(out), 0};
+    size_t const r = ZSTD_decompressStream(dctx, &ob, &in);
+    CHECK_Z(r);
+    CHECK(r != 0);  /* frame not finished */
+}
+
+/* ZSTD_decompressDCtx() uses the prefix for exactly one call, whatever the
+ * input is. The explicit dictionary functions use their own dictionary and
+ * leave the prefix alone. */
+static void FUZ_pfx_testOneShot(unsigned mode)
+{
+    FUZ_pfx p;
+    ZSTD_DDict* const b = FUZ_mdict_createDict(0, 'B');
+    BYTE rawB[16], in[64], out[32];
+    size_t n, r;
+    unsigned i;
+    FUZ_pfx_init(&p, mode);
+    memset(rawB, 'B', sizeof(rawB));
+
+    /* Every frame of a single call, including after a skippable frame, uses the prefix. */
+    n = FUZ_mdict_makeSkip(in, 0);
+    memcpy(in + n, p.frame, p.frameSize); n += p.frameSize;
+    memcpy(in + n, p.frame, p.frameSize); n += p.frameSize;
+    FUZ_pfx_ref(&p);
+    r = ZSTD_decompressDCtx(p.dctx, out, sizeof(out), in, n);
+    FUZ_mdict_checkOutput(r, out, "AAAAAAAAAAAAAAAA");
+    CHECK(!FUZ_pfx_isSet(&p));
+
+    /* Consumed even when there is no frame to decode, or the call fails. */
+    for (i = 0; i < 3; ++i) {
+        if (i == 0) n = 0;
+        else if (i == 1) n = FUZ_mdict_makeSkip(in, 0);
+        else { memset(in, 0xff, 8); n = 8; }
+        FUZ_pfx_ref(&p);
+        r = ZSTD_decompressDCtx(p.dctx, out, sizeof(out), in, n);
+        CHECK((int)ZSTD_isError(r) == (int)(i == 2));
+        CHECK(!FUZ_pfx_isSet(&p));
+    }
+
+    /* Explicit dictionaries take precedence and do not consume the prefix. */
+    FUZ_pfx_ref(&p);
+    r = ZSTD_decompress_usingDict(p.dctx, out, sizeof(out), p.frame, p.frameSize, rawB, sizeof(rawB));
+    FUZ_mdict_checkOutput(r, out, "BBBBBBBB");
+    r = ZSTD_decompress_usingDDict(p.dctx, out, sizeof(out), p.frame, p.frameSize, b);
+    FUZ_mdict_checkOutput(r, out, "BBBBBBBB");
+    CHECK(FUZ_pfx_isSet(&p));
+
+    CHECK_Z(ZSTD_freeDDict(b));
+    CHECK_Z(ZSTD_freeDCtx(p.dctx));
+}
+
+/* ZSTD_decompressStream() uses the prefix until the first frame is complete
+ * (returns 0), including frames with no output. Input is fed in chunks of every
+ * size, so the header and the payload are split at every possible position. */
+static void FUZ_pfx_testStreaming(unsigned mode)
+{
+    static const BYTE skipEmpty[] = {0x50,0x2a,0x4d,0x18, 0,0,0,0};
+    static const BYTE skipData[]  = {0x5f,0x2a,0x4d,0x18, 5,0,0,0, 1,2,3,4,5};
+    static const BYTE emptyFrame[] = {0x28,0xb5,0x2f,0xfd,0x20,0,1,0,0};
+    static const struct { const BYTE* src; size_t size; } noOutput[] = {
+        {skipEmpty, sizeof(skipEmpty)},
+        {skipData, sizeof(skipData)},
+        {emptyFrame, sizeof(emptyFrame)}   /* zstd frame with no content */
+    };
+    FUZ_pfx p;
+    BYTE frame[32], out[32];
+    size_t size, chunk, r;
+    unsigned i;
+    FUZ_pfx_init(&p, mode);
+
+    /* Frames with and without a known size, which can be decoded in one pass. */
+    for (i = 0; i < 2; ++i) {
+        size = FUZ_mdict_makeFrame(frame, 0, i ? FUZ_mdict_knownSize : 0);
+        for (chunk = 1; chunk <= size; ++chunk) {
+            FUZ_pfx_ref(&p);
+            r = FUZ_mdict_decompressStream(p.dctx, out, sizeof(out), frame, size, chunk);
+            FUZ_mdict_checkOutput(r, out, "AAAAAAAA");
+            CHECK(!FUZ_pfx_isSet(&p));
+        }
+    }
+
+    /* Frames that produce no output also consume the prefix. */
+    for (i = 0; i < COUNTOF(noOutput); ++i) {
+        for (chunk = 1; chunk <= noOutput[i].size; ++chunk) {
+            FUZ_pfx_ref(&p);
+            CHECK_EQ(FUZ_mdict_decompressStream(p.dctx, out, sizeof(out),
+                                                noOutput[i].src, noOutput[i].size, chunk), 0);
+            CHECK(!FUZ_pfx_isSet(&p));
+        }
+    }
+    CHECK_Z(ZSTD_freeDCtx(p.dctx));
+}
+
+/* Interaction with ZSTD_DCtx_reset() and with one-shot calls after a stream is
+ * started and abandoned. This guards the bug where a prefix belonging to an
+ * abandoned stream was silently applied to the next, unrelated frame. */
+static void FUZ_pfx_testReset(unsigned mode)
+{
+    FUZ_pfx p;
+    ZSTD_DDict* const b = FUZ_mdict_createDict(0, 'B');
+    BYTE rawB[16], out[32];
+    size_t r;
+    unsigned how;
+    FUZ_pfx_init(&p, mode);
+    memset(rawB, 'B', sizeof(rawB));
+
+    /* A session reset keeps a prefix that streaming has not touched yet. */
+    FUZ_pfx_ref(&p);
+    CHECK_Z(ZSTD_DCtx_reset(p.dctx, ZSTD_reset_session_only));
+    CHECK(FUZ_pfx_isSet(&p));
+
+    /* Once streaming has started, even with an incomplete header, abandoning the
+     * frame discards the prefix: either explicitly, or implicitly by calling any
+     * one-shot function (which must not leak the prefix to the next frame). */
+    for (how = 0; how < 5; ++how) {
+        size_t const sizes[] = {1, p.frameSize - 1};
+        size_t i;
+        for (i = 0; i < COUNTOF(sizes); ++i) {
+            FUZ_pfx_ref(&p);
+            FUZ_pfx_startStream(p.dctx, p.frame, sizes[i]);
+            switch (how) {
+            case 0: CHECK_Z(ZSTD_DCtx_reset(p.dctx, ZSTD_reset_session_only)); break;
+            case 1: CHECK_Z(ZSTD_DCtx_reset(p.dctx, ZSTD_reset_session_and_parameters)); break;
+            case 2: break;  /* FUZ_pfx_isSet() is itself a one-shot call */
+            case 3:
+                r = ZSTD_decompress_usingDict(p.dctx, out, sizeof(out), p.frame, p.frameSize, rawB, sizeof(rawB));
+                FUZ_mdict_checkOutput(r, out, "BBBBBBBB");
+                break;
+            default:
+                r = ZSTD_decompress_usingDDict(p.dctx, out, sizeof(out), p.frame, p.frameSize, b);
+                FUZ_mdict_checkOutput(r, out, "BBBBBBBB");
+                break;
+            }
+            CHECK(!FUZ_pfx_isSet(&p));
+        }
+    }
+
+    /* Resetting the parameters discards the prefix when no frame is active ... */
+    FUZ_pfx_ref(&p);
+    CHECK_Z(ZSTD_DCtx_reset(p.dctx, ZSTD_reset_parameters));
+    CHECK(!FUZ_pfx_isSet(&p));
+
+    /* ... and is rejected, with no effect, while a frame is being decompressed. */
+    FUZ_pfx_ref(&p);
+    FUZ_pfx_startStream(p.dctx, p.frame, 1);
+    CHECK_EQ(ZSTD_getErrorCode(ZSTD_DCtx_reset(p.dctx, ZSTD_reset_parameters)), ZSTD_error_stage_wrong);
+    r = FUZ_mdict_decompressStream(p.dctx, out, sizeof(out), p.frame + 1, p.frameSize - 1, p.frameSize);
+    FUZ_mdict_checkOutput(r, out, "AAAAAAAA");
+
+    CHECK_Z(ZSTD_freeDDict(b));
+    CHECK_Z(ZSTD_freeDCtx(p.dctx));
+}
+
+/* Referencing any prefix or dictionary (including NULL or empty) replaces the
+ * previous prefix, and so does ZSTD_initDStream(). */
+static void FUZ_pfx_testReplacement(unsigned mode)
+{
+    FUZ_pfx p;
+    ZSTD_DDict* const b = FUZ_mdict_createDict(0, 'B');
+    BYTE rawB[16], out[32];
+    size_t r;
+    unsigned i;
+    FUZ_pfx_init(&p, mode);
+    memset(rawB, 'B', sizeof(rawB));
+
+    /* Replaced by something else: only the new dictionary is used. */
+    for (i = 0; i < 3; ++i) {
+        FUZ_pfx_ref(&p);
+        switch (i) {
+        case 0: CHECK_Z(ZSTD_DCtx_refPrefix(p.dctx, rawB, sizeof(rawB))); break;
+        case 1: CHECK_Z(ZSTD_DCtx_loadDictionary(p.dctx, rawB, sizeof(rawB))); break;
+        default: CHECK_Z(ZSTD_DCtx_refDDict(p.dctx, b)); break;
+        }
+        r = ZSTD_decompressDCtx(p.dctx, out, sizeof(out), p.frame, p.frameSize);
+        FUZ_mdict_checkOutput(r, out, "BBBBBBBB");
+    }
+
+    /* Replaced by nothing. */
+    for (i = 0; i < 4; ++i) {
+        FUZ_pfx_ref(&p);
+        switch (i) {
+        case 0: CHECK_Z(ZSTD_DCtx_refPrefix(p.dctx, NULL, 0)); break;
+        case 1: CHECK_Z(ZSTD_DCtx_loadDictionary(p.dctx, NULL, 0)); break;
+        case 2: CHECK_Z(ZSTD_DCtx_refDDict(p.dctx, NULL)); break;
+        default: CHECK_Z(ZSTD_initDStream(p.dctx)); break;
+        }
+        CHECK(!FUZ_pfx_isSet(&p));
+    }
+    CHECK_Z(ZSTD_freeDDict(b));
+    CHECK_Z(ZSTD_freeDCtx(p.dctx));
+}
+
+/* One-shot functions reset the streaming session first: they work on a DCtx
+ * left mid-stream or after a streaming error, and leave it ready to stream a
+ * new frame without any explicit ZSTD_DCtx_reset(). Before the fix they failed
+ * (or decoded garbage) on a dirty DCtx, and the single-pass streaming shortcut
+ * was entangled with this.
+ * `api` selects the one-shot function:
+ * 0: decompressDCtx, 1: usingDict, 2: usingDDict, 3: decompressDCtx with
+ * ZSTD_d_refMultipleDDicts (a separate code path). The DCtx always
+ * references dictionary A, so streaming can decode the frame as well. */
+static void FUZ_reset_testDirtyStream(unsigned api)
+{
+    ZSTD_DDict* const ddict = FUZ_mdict_createDict(1111, 'A');
+    ZSTD_DCtx* const dctx = api == 3 ? FUZ_mdict_createContext(ddict, NULL) : ZSTD_createDCtx();
+    BYTE dict[44], frame[32], bad[32], out[32];
+    size_t const frameSize = FUZ_mdict_makeFrame(frame, 1111, 0);
+    unsigned dirty;
+    CHECK(dctx != NULL);
+    if (api != 3) CHECK_Z(ZSTD_DCtx_refDDict(dctx, ddict));
+    FUZ_mdict_makeDict(dict, 1111, 'A');
+    memcpy(bad, frame, frameSize);
+    bad[frameSize - 10] = 0x3f;   /* block header (last 10 bytes): reserved block type */
+
+    for (dirty = 0; dirty < 3; ++dirty) {
+        /* 0: incomplete frame header, 1: inside the block, 2: streaming error */
+        const BYTE* const src = dirty == 2 ? bad : frame;
+        size_t const size = dirty == 0 ? 3 : dirty == 1 ? frameSize - 1 : frameSize;
+        ZSTD_inBuffer in = {src, size, 0};
+        ZSTD_outBuffer ob = {out, sizeof(out), 0};
+        size_t r = ZSTD_decompressStream(dctx, &ob, &in);
+        CHECK((int)ZSTD_isError(r) == (int)(dirty == 2));
+
+        switch (api) {
+        case 1: r = ZSTD_decompress_usingDict(dctx, out, sizeof(out), frame, frameSize, dict, sizeof(dict)); break;
+        case 2: r = ZSTD_decompress_usingDDict(dctx, out, sizeof(out), frame, frameSize, ddict); break;
+        default: r = ZSTD_decompressDCtx(dctx, out, sizeof(out), frame, frameSize); break;
+        }
+        FUZ_mdict_checkOutput(r, out, "AAAAAAAA");
+
+        r = FUZ_mdict_decompressStream(dctx, out, sizeof(out), frame, frameSize, frameSize);
+        FUZ_mdict_checkOutput(r, out, "AAAAAAAA");
+    }
+    CHECK_Z(ZSTD_freeDCtx(dctx));
+    CHECK_Z(ZSTD_freeDDict(ddict));
+}
+
+static unsigned test_sessionReset(unsigned testNb)
+{
+    static const struct { const char* name; void (*run)(unsigned); unsigned nbParams; } tests[] = {
+        {"prefix lifetime: one-shot calls", FUZ_pfx_testOneShot, 2},
+        {"prefix lifetime: streaming", FUZ_pfx_testStreaming, 2},
+        {"prefix lifetime: reset and abandoned streams", FUZ_pfx_testReset, 2},
+        {"prefix lifetime: replacement", FUZ_pfx_testReplacement, 2},
+        {"one-shot decompression resets the streaming session", FUZ_reset_testDirtyStream, 4},
+    };
+    size_t i;
+    unsigned param;
+    for (i = 0; i < COUNTOF(tests); ++i) {
+        DISPLAYLEVEL(3, "test%3u : %s : ", testNb++, tests[i].name);
+        for (param = 0; param < tests[i].nbParams; ++param) tests[i].run(param);
+        DISPLAYLEVEL(3, "OK \n");
+    }
+    return testNb;
+}
+
 static void FUZ_mdict_testZeroID(void)
 {
     U32 const zero = 0;
@@ -5958,6 +6265,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
         }
         DISPLAYLEVEL(3, "OK \n");
 
+        testNb = test_sessionReset(testNb);
         testNb = test_multipleDDicts(testNb);
 
         DISPLAYLEVEL(3, "test%3i : ZSTD_decompressDCtx() with multiple ddicts : ", testNb++);
