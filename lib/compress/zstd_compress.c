@@ -5072,9 +5072,11 @@ size_t ZSTD_loadCEntropy(ZSTD_compressedBlockState_t* bs, void* workspace,
         size_t const matchlengthHeaderSize = FSE_readNCount(matchlengthNCount, &matchlengthMaxValue, &matchlengthLog, dictPtr, (size_t)(dictEnd-dictPtr));
         RETURN_ERROR_IF(FSE_isError(matchlengthHeaderSize), dictionary_corrupted, "");
         RETURN_ERROR_IF(matchlengthLog > MLFSELog, dictionary_corrupted, "");
+        /* The optimal parser reads every symbol's cost, including absent ones.
+         * FSE_readNCount() zero-fills the omitted normalized counts. */
         RETURN_ERROR_IF(FSE_isError(FSE_buildCTable_wksp(
                 bs->entropy.fse.matchlengthCTable,
-                matchlengthNCount, matchlengthMaxValue, matchlengthLog,
+                matchlengthNCount, MaxML, matchlengthLog,
                 workspace, HUF_WORKSPACE_SIZE)),
             dictionary_corrupted, "");
         bs->entropy.fse.matchlength_repeatMode = ZSTD_dictNCountRepeat(matchlengthNCount, matchlengthMaxValue, MaxML);
@@ -5086,9 +5088,10 @@ size_t ZSTD_loadCEntropy(ZSTD_compressedBlockState_t* bs, void* workspace,
         size_t const litlengthHeaderSize = FSE_readNCount(litlengthNCount, &litlengthMaxValue, &litlengthLog, dictPtr, (size_t)(dictEnd-dictPtr));
         RETURN_ERROR_IF(FSE_isError(litlengthHeaderSize), dictionary_corrupted, "");
         RETURN_ERROR_IF(litlengthLog > LLFSELog, dictionary_corrupted, "");
+        /* As above, initialize costs for the full symbol range. */
         RETURN_ERROR_IF(FSE_isError(FSE_buildCTable_wksp(
                 bs->entropy.fse.litlengthCTable,
-                litlengthNCount, litlengthMaxValue, litlengthLog,
+                litlengthNCount, MaxLL, litlengthLog,
                 workspace, HUF_WORKSPACE_SIZE)),
             dictionary_corrupted, "");
         bs->entropy.fse.litlength_repeatMode = ZSTD_dictNCountRepeat(litlengthNCount, litlengthMaxValue, MaxLL);

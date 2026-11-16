@@ -1831,6 +1831,99 @@ static void FUZ_dictFree(void* opaque, void* allocation)
     free(allocation);
 }
 
+/* Writes an FSE table description (NCount) for symbols [0, maxSymbol] where
+ * symbol 1 is absent (zero count), symbols 2..maxSymbol have probability
+ * 1/2^tableLog, and symbol 0 takes the rest. Returns the bytes written. */
+static size_t FUZ_writeNCount(BYTE* dst, size_t capacity,
+        unsigned maxSymbol, unsigned tableLog)
+{
+    short norm[MaxSeq + 1] = { 0 };
+    size_t n;
+    unsigned s;
+    assert(maxSymbol >= 2);
+    for (s = 2; s <= maxSymbol; ++s)
+        norm[s] = 1;
+    norm[0] = (short)((1U << tableLog) - (maxSymbol - 1));
+    CHECK_VAR(n, FSE_writeNCount(dst, capacity, norm, maxSymbol, tableLog));
+    return n;
+}
+
+/* Guards against the optimal parser (btopt/btultra/btultra2) reading
+ * uninitialized or out-of-range costs when it seeds its statistics from a
+ * dictionary's entropy tables.
+ *
+ * The dictionary format allows the match length and literal length FSE tables
+ * to omit the high symbols (they are implicitly absent), and to contain absent
+ * symbols inside the listed range. The compressor used to build its tables
+ * only up to the last listed symbol, leaving the costs of the omitted symbols
+ * uninitialized. An absent symbol at the maximum table log costs tableLog+1,
+ * which is not below the frequency scale, and a Huffman table deeper than 11
+ * bits is likewise too deep for the scale. Both tripped an assert and, in
+ * release builds, made an invalid shift (#4681).
+ *
+ * The dictionary is hand-built to follow the format, rather than trained, so
+ * the test does not depend on dictionary training. The only observable
+ * contract is that compression with this valid dictionary succeeds and
+ * round-trips, so that is what is checked. The bug itself is detected by
+ * asserts (and sanitizers), so this test is most effective in debug builds. */
+static void test_optimalParserDictEntropy(unsigned tnb)
+{
+    BYTE dict[1024];
+    BYTE src[1024];
+    BYTE compressed[ZSTD_COMPRESSBOUND(sizeof(src))];
+    BYTE decoded[sizeof(src)];
+    size_t pos = 8;
+    unsigned i;
+    ZSTD_strategy strategy;
+    ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+    ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+
+    DISPLAYLEVEL(3, "test%3u : optimal parser with sparse dictionary entropy tables : ", tnb);
+    CHECK(cctx != NULL && dctx != NULL);
+
+    /* Dictionary: magic, ID, skewed 12-bit Huffman table with every literal
+     * present, FSE tables at the maximum table log with symbol 1 absent
+     * (offset: symbols 0-MaxOff, ML & LL: symbols 0-2 only), repcodes, and
+     * content. */
+    MEM_writeLE32(dict, ZSTD_MAGIC_DICTIONARY);
+    MEM_writeLE32(dict + 4, 1);
+    {   unsigned counts[MaxLit + 1];
+        HUF_CREATE_STATIC_CTABLE(hufTable, MaxLit);
+        U64 workspace[HUF_WORKSPACE_SIZE_U64];
+        size_t n;
+        for (i = 0; i <= MaxLit; ++i)
+            counts[i] = i < 16 ? 1U << (16 - i) : 1;
+        CHECK_Z(HUF_buildCTable_wksp(hufTable, counts, MaxLit, 12, workspace, sizeof(workspace)));
+        CHECK_VAR(n, HUF_writeCTable_wksp(dict + pos, sizeof(dict) - pos,
+                    hufTable, MaxLit, 12, workspace, sizeof(workspace)));
+        pos += n;
+    }
+    pos += FUZ_writeNCount(dict + pos, sizeof(dict) - pos, MaxOff, OffFSELog);
+    pos += FUZ_writeNCount(dict + pos, sizeof(dict) - pos, 2, MLFSELog);
+    pos += FUZ_writeNCount(dict + pos, sizeof(dict) - pos, 2, LLFSELog);
+    for (i = 0; i < ZSTD_REP_NUM; ++i, pos += 4)
+        MEM_writeLE32(dict + pos, 1 + i);
+    for (i = 0; i < 256; ++i)
+        dict[pos++] = (BYTE)i;
+    CHECK(pos <= sizeof(dict));
+
+    for (i = 0; i < sizeof(src); ++i)
+        src[i] = (BYTE)(i % 251);
+
+    for (strategy = ZSTD_btopt; strategy <= ZSTD_btultra2; ++strategy) {
+        size_t cSize, dSize;
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, (int)strategy));
+        CHECK_Z(ZSTD_CCtx_loadDictionary(cctx, dict, pos));
+        CHECK_VAR(cSize, ZSTD_compress2(cctx, compressed, sizeof(compressed), src, sizeof(src)));
+        CHECK_VAR(dSize, ZSTD_decompress_usingDict(dctx, decoded, sizeof(decoded),
+                    compressed, cSize, dict, pos));
+        CHECK(dSize == sizeof(src) && !memcmp(decoded, src, sizeof(src)));
+    }
+    ZSTD_freeCCtx(cctx);
+    ZSTD_freeDCtx(dctx);
+    DISPLAYLEVEL(3, "OK \n");
+}
+
 static void test_dictionaryLoadErrors(const void* dict, size_t dictSize)
 {
     FUZ_dictAllocState state = { 0, 0 };
@@ -3375,6 +3468,8 @@ static int basicUnitTests(U32 const seed, double compressibility)
     test_decompressStreamSplitHeader(testNb++);
 
     test_setCParams(testNb++);
+
+    test_optimalParserDictEntropy(testNb++);
 
     DISPLAYLEVEL(3, "test%3u : ZSTD_adjustCParams : ", testNb++);
     {

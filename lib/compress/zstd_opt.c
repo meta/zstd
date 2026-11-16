@@ -130,6 +130,16 @@ static U32 ZSTD_scaleStats(unsigned* table, U32 lastEltIndex, U32 logTarget)
     return ZSTD_downscaleStats(table, lastEltIndex, ZSTD_highbit32(factor), base_1guaranteed);
 }
 
+/* Dictionary tables can assign costs at or above the frequency scale:
+ * absent FSE symbols cost tableLog+1, and the Huffman reader accepts tables
+ * deeper than LitHufLog. Keep a minimum frequency of 1 without underflowing
+ * the shift. A zero cost also retains its historical minimum frequency. */
+static U32 ZSTD_freqFromBitCost(U32 bitCost, U32 scaleLog)
+{
+    assert(scaleLog < 31);
+    return bitCost > 0 && bitCost < scaleLog ? 1U << (scaleLog - bitCost) : 1;
+}
+
 /* ZSTD_rescaleFreqs() :
  * if first block (detected by optPtr->litLengthSum == 0) : init statistics
  *    take hints from dictionary if there is one
@@ -168,8 +178,7 @@ ZSTD_rescaleFreqs(optState_t* const optPtr,
                 for (lit=0; lit<=MaxLit; lit++) {
                     U32 const scaleLog = 11;   /* scale to 2K */
                     U32 const bitCost = HUF_getNbBitsFromCTable(optPtr->symbolCosts->huf.CTable, lit);
-                    assert(bitCost <= scaleLog);
-                    optPtr->litFreq[lit] = bitCost ? 1 << (scaleLog-bitCost) : 1 /*minimum to calculate cost*/;
+                    optPtr->litFreq[lit] = ZSTD_freqFromBitCost(bitCost, scaleLog);
                     optPtr->litSum += optPtr->litFreq[lit];
             }   }
 
@@ -180,8 +189,7 @@ ZSTD_rescaleFreqs(optState_t* const optPtr,
                 for (ll=0; ll<=MaxLL; ll++) {
                     U32 const scaleLog = 10;   /* scale to 1K */
                     U32 const bitCost = FSE_getMaxNbBits(llstate.symbolTT, ll);
-                    assert(bitCost < scaleLog);
-                    optPtr->litLengthFreq[ll] = bitCost ? 1 << (scaleLog-bitCost) : 1 /*minimum to calculate cost*/;
+                    optPtr->litLengthFreq[ll] = ZSTD_freqFromBitCost(bitCost, scaleLog);
                     optPtr->litLengthSum += optPtr->litLengthFreq[ll];
             }   }
 
@@ -192,8 +200,7 @@ ZSTD_rescaleFreqs(optState_t* const optPtr,
                 for (ml=0; ml<=MaxML; ml++) {
                     U32 const scaleLog = 10;
                     U32 const bitCost = FSE_getMaxNbBits(mlstate.symbolTT, ml);
-                    assert(bitCost < scaleLog);
-                    optPtr->matchLengthFreq[ml] = bitCost ? 1 << (scaleLog-bitCost) : 1 /*minimum to calculate cost*/;
+                    optPtr->matchLengthFreq[ml] = ZSTD_freqFromBitCost(bitCost, scaleLog);
                     optPtr->matchLengthSum += optPtr->matchLengthFreq[ml];
             }   }
 
@@ -204,8 +211,7 @@ ZSTD_rescaleFreqs(optState_t* const optPtr,
                 for (of=0; of<=MaxOff; of++) {
                     U32 const scaleLog = 10;
                     U32 const bitCost = FSE_getMaxNbBits(ofstate.symbolTT, of);
-                    assert(bitCost < scaleLog);
-                    optPtr->offCodeFreq[of] = bitCost ? 1 << (scaleLog-bitCost) : 1 /*minimum to calculate cost*/;
+                    optPtr->offCodeFreq[of] = ZSTD_freqFromBitCost(bitCost, scaleLog);
                     optPtr->offCodeSum += optPtr->offCodeFreq[of];
             }   }
 
