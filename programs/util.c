@@ -167,12 +167,12 @@ int UTIL_requireUserConfirmation(const char* prompt, const char* abortMsg,
 /*-****************************************
 *  UTF-8 <-> UTF-16 conversion (Windows)
 ******************************************/
-wchar_t* UTIL_utf8ToUtf16(const char* str)
+WCHAR* UTIL_utf8ToUtf16(const char* str)
 {
     int const len = MultiByteToWideChar(CP_UTF8, 0, str, -1, NULL, 0);
-    wchar_t* buf;
+    WCHAR* buf;
     if (len == 0) { errno = EINVAL; return NULL; }
-    buf = (wchar_t*)malloc((size_t)len * sizeof(wchar_t));
+    buf = (WCHAR*)malloc((size_t)len * sizeof(WCHAR));
     if (buf == NULL) return NULL;
     if (MultiByteToWideChar(CP_UTF8, 0, str, -1, buf, len) == 0) {
         free(buf);
@@ -182,7 +182,7 @@ wchar_t* UTIL_utf8ToUtf16(const char* str)
     return buf;
 }
 
-char* UTIL_utf16ToUtf8(const wchar_t* str)
+char* UTIL_utf16ToUtf8(const WCHAR* str)
 {
     int const len = WideCharToMultiByte(CP_UTF8, 0, str, -1, NULL, 0, NULL, NULL);
     char* buf;
@@ -197,7 +197,7 @@ char* UTIL_utf16ToUtf8(const wchar_t* str)
     return buf;
 }
 
-char** UTIL_utf8ArgvFromUtf16(int argc, wchar_t** argv)
+char** UTIL_utf8ArgvFromUtf16(int argc, WCHAR** argv)
 {
     char** const buf = (char**)calloc((size_t)argc + 1, sizeof(char*));
     int i;
@@ -225,8 +225,8 @@ void UTIL_freeUtf8Argv(int argc, char** argv)
 ******************************************/
 FILE* UTIL_fopen(const char* filename, const char* mode)
 {
-    wchar_t* const wfilename = UTIL_utf8ToUtf16(filename);
-    wchar_t* const wmode = UTIL_utf8ToUtf16(mode);
+    WCHAR* const wfilename = UTIL_utf8ToUtf16(filename);
+    WCHAR* const wmode = UTIL_utf8ToUtf16(mode);
     FILE* f = NULL;
     if (wfilename != NULL && wmode != NULL) {
         f = _wfopen(wfilename, wmode);
@@ -238,7 +238,7 @@ FILE* UTIL_fopen(const char* filename, const char* mode)
 
 int UTIL_open(const char* filename, int flags, int mode)
 {
-    wchar_t* const wfilename = UTIL_utf8ToUtf16(filename);
+    WCHAR* const wfilename = UTIL_utf8ToUtf16(filename);
     int fd = -1;
     if (wfilename != NULL) {
         fd = _wopen(wfilename, flags, mode);
@@ -249,7 +249,7 @@ int UTIL_open(const char* filename, int flags, int mode)
 
 int UTIL_remove(const char* filename)
 {
-    wchar_t* const wfilename = UTIL_utf8ToUtf16(filename);
+    WCHAR* const wfilename = UTIL_utf8ToUtf16(filename);
     int ret = -1;
     if (wfilename != NULL) {
         ret = _wremove(wfilename);
@@ -260,7 +260,7 @@ int UTIL_remove(const char* filename)
 
 static int UTIL_wstat(const char* filename, stat_t* statbuf)
 {
-    wchar_t* const wfilename = UTIL_utf8ToUtf16(filename);
+    WCHAR* const wfilename = UTIL_utf8ToUtf16(filename);
     int ret = -1;
     if (wfilename != NULL) {
 #if defined(_MSC_VER)
@@ -277,7 +277,7 @@ static int UTIL_wstat(const char* filename, stat_t* statbuf)
 
 static int UTIL_wchmod(const char* filename, mode_t permissions)
 {
-    wchar_t* const wfilename = UTIL_utf8ToUtf16(filename);
+    WCHAR* const wfilename = UTIL_utf8ToUtf16(filename);
     int ret = -1;
     if (wfilename != NULL) {
         ret = _wchmod(wfilename, (int)permissions);
@@ -288,7 +288,7 @@ static int UTIL_wchmod(const char* filename, mode_t permissions)
 
 static int UTIL_wutime(const char* filename, const stat_t* statbuf)
 {
-    wchar_t* const wfilename = UTIL_utf8ToUtf16(filename);
+    WCHAR* const wfilename = UTIL_utf8ToUtf16(filename);
     int ret = -1;
     if (wfilename != NULL) {
         struct _utimbuf timebuf;
@@ -302,7 +302,7 @@ static int UTIL_wutime(const char* filename, const stat_t* statbuf)
 
 static int UTIL_wmkdir(const char* dirname)
 {
-    wchar_t* const wdirname = UTIL_utf8ToUtf16(dirname);
+    WCHAR* const wdirname = UTIL_utf8ToUtf16(dirname);
     int ret = -1;
     if (wdirname != NULL) {
         ret = _wmkdir(wdirname);
@@ -354,7 +354,7 @@ int UTIL_fprintf(FILE* stream, const char* format, ...)
             ret = -1;
             if (u8Buf != NULL) {
                 int const u8Size = vsnprintf(u8Buf, bufSize, format, args);
-                wchar_t* const u16Buf = (u8Size >= 0) ? UTIL_utf8ToUtf16(u8Buf) : NULL;
+                WCHAR* const u16Buf = (u8Size >= 0) ? UTIL_utf8ToUtf16(u8Buf) : NULL;
                 if (u16Buf != NULL) {
                     int const fd = _fileno(stream);
                     int previousMode;
@@ -744,7 +744,7 @@ int UTIL_isLink(const char* infilename)
     }
 #elif defined(_WIN32)
     {
-        wchar_t* const winfilename = UTIL_utf8ToUtf16(infilename);
+        WCHAR* const winfilename = UTIL_utf8ToUtf16(infilename);
         DWORD const attributes = winfilename ? GetFileAttributesW(winfilename) : INVALID_FILE_ATTRIBUTES;
         if ( attributes != INVALID_FILE_ATTRIBUTES
           && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) ) {
@@ -1178,7 +1178,7 @@ static int UTIL_prepareFileList(const char* dirName,
                                 char** bufEnd, int followLinks)
 {
     char* path;
-    wchar_t* wpath;
+    WCHAR* wpath;
     size_t dirLength, pathLength;
     int nbFiles = 0;
     WIN32_FIND_DATAW cFile;

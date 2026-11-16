@@ -1711,12 +1711,12 @@ _end:
  * Other toolchains (MinGW) only support it with -municode,
  * so use main() with GetCommandLineW() there. */
 #  if defined(_MSC_VER)
-int wmain(int argCount, wchar_t** wargv)
+int wmain(int argCount, WCHAR** wargv)
 {
 #  else
 int main(int argCount, const char** unusedArgv)
 {
-    wchar_t** const wargv = CommandLineToArgvW(GetCommandLineW(), &argCount);
+    WCHAR** const wargv = CommandLineToArgvW(GetCommandLineW(), &argCount);
     (void)unusedArgv;
 #  endif
     {   char** const argv = UTIL_utf8ArgvFromUtf16(argCount, wargv);

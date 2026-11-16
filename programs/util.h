@@ -140,12 +140,12 @@ int UTIL_requireUserConfirmation(const char* prompt, const char* abortMsg, const
 
 /* Converts between UTF-8 and UTF-16, like strdup().
  * @return : a buffer to release with free(), or NULL on error. */
-wchar_t* UTIL_utf8ToUtf16(const char* str);
-char* UTIL_utf16ToUtf8(const wchar_t* str);
+WCHAR* UTIL_utf8ToUtf16(const char* str);
+char* UTIL_utf16ToUtf8(const WCHAR* str);
 
 /* Converts a UTF-16 argv into a NULL-terminated UTF-8 argv.
  * @return : an array to release with UTIL_freeUtf8Argv(), or NULL on error. */
-char** UTIL_utf8ArgvFromUtf16(int argc, wchar_t** argv);
+char** UTIL_utf8ArgvFromUtf16(int argc, WCHAR** argv);
 void UTIL_freeUtf8Argv(int argc, char** argv);
 
 /* UTF-8 versions of fopen(), _open(), remove() and fprintf().

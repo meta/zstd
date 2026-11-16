@@ -1124,7 +1124,7 @@ static size_t FIO_setDictBufferMMap(FIO_Dict_t* dict, const char* fileName, FIO_
 
     DISPLAYLEVEL(4,"Loading %s as dictionary \n", fileName);
 
-    {   wchar_t* const wFileName = UTIL_utf8ToUtf16(fileName);
+    {   WCHAR* const wFileName = UTIL_utf8ToUtf16(fileName);
         fileHandle = wFileName
                    ? CreateFileW(wFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_READONLY, NULL)
                    : INVALID_HANDLE_VALUE;
