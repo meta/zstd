@@ -154,7 +154,16 @@ void UTIL_freeUtf8Argv(int argc, char** argv);
 FILE* UTIL_fopen(const char* filename, const char* mode);
 int UTIL_open(const char* filename, int flags, int mode);
 int UTIL_remove(const char* filename);
-int UTIL_fprintf(FILE* stream, const char* format, ...);
+#  if defined(__GNUC__)
+#    if defined(__MINGW_PRINTF_FORMAT)
+#      define UTIL_FPRINTF_ATTRIBUTE __attribute__((format(__MINGW_PRINTF_FORMAT, 2, 3)))
+#    else
+#      define UTIL_FPRINTF_ATTRIBUTE __attribute__((format(printf, 2, 3)))
+#    endif
+#  else
+#    define UTIL_FPRINTF_ATTRIBUTE
+#  endif
+int UTIL_fprintf(FILE* stream, const char* format, ...) UTIL_FPRINTF_ATTRIBUTE;
 
 #else
 
