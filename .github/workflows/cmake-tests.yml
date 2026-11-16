@@ -170,6 +170,31 @@ jobs:
         cd build\cmake\build
         ctest.exe -V -C Debug
 
+  # Clang-CL cross-compile targeting Windows ARM64 (build only, nothing is run)
+  # clang-cl does not define __GNUC__, so on ARM64 compiler.h selects the
+  # __aarch64__ inline-asm PREFETCH_L1/L2 macros, which dereference their
+  # argument (`"Q"(*(ptr))`). That path is not compiled by any other CI job
+  # (clang on Linux/macOS uses __builtin_prefetch), and it breaks with
+  # -Wvoid-ptr-dereference if a `void*` is ever passed to PREFETCH_*().
+  # Warnings are errors so any such regression fails the build.
+  cmake-windows-clang-cl-arm64-build:
+    name: "CMake Windows Clang-CL ARM64 (cross-compile, build only)"
+    runs-on: windows-2022
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # tag=v3.0.0
+    - name: "Configure CMake (Clang-CL ARM64)"
+      run: |
+        cd build\cmake
+        mkdir build
+        cd build
+        cmake.exe -G "Visual Studio 17 2022" -A ARM64 -T ClangCL -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON -DZSTD_BUILD_PROGRAMS=ON -DZSTD_BUILD_TESTS=OFF ..
+    - name: "Build (Clang-CL ARM64)"
+      run: |
+        cd build\cmake\build
+        cmake.exe --build . --config Release
+
   # macOS ARM64 (Apple Silicon) specific cmake testing
   # Validates zstd builds and runs correctly on Apple Silicon architecture
   # Uses native ARM64 hardware for optimal performance and compatibility testing
