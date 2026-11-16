@@ -1462,7 +1462,7 @@ Resulting in following 2-bytes bitstream :
 
 Here is an alternative representation with the symbol codes separated by underscore:
 ```
-00000001 00001_101
+0000_0001 00001_1_01
 ```
 
 Reading highest `Max_Number_of_Bits` bits,
