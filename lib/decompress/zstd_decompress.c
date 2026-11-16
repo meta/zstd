@@ -713,7 +713,6 @@ static size_t ZSTD_decodeFrameHeader(ZSTD_DCtx* dctx, const void* src, size_t he
 #endif
     dctx->validateChecksum = (dctx->fParams.checksumFlag && !dctx->forceIgnoreChecksum) ? 1 : 0;
     if (dctx->validateChecksum) XXH64_reset(&dctx->xxhState, 0);
-    dctx->processedCSize += headerSize;
     return 0;
 }
 
@@ -1347,6 +1346,8 @@ size_t ZSTD_decompressContinue(ZSTD_DCtx* dctx, void* dst, size_t dstCapacity, c
                 dctx->stage = bp.lastBlock ? ZSTDds_decompressLastBlock : ZSTDds_decompressBlock;
                 return 0;
             }
+            RETURN_ERROR_IF(bp.blockType != bt_raw, corruption_detected,
+                            "Only raw blocks can have an empty payload");
             /* empty block */
             if (bp.lastBlock) {
                 /* An empty last block ends the frame here, so the content size
@@ -1360,6 +1361,7 @@ size_t ZSTD_decompressContinue(ZSTD_DCtx* dctx, void* dst, size_t dstCapacity, c
                     dctx->expected = 4;
                     dctx->stage = ZSTDds_checkChecksum;
                 } else {
+                    ZSTD_DCtx_trace_end(dctx, dctx->decodedSize, dctx->processedCSize, /* streaming */ 1);
                     dctx->expected = 0; /* end of frame */
                     dctx->stage = ZSTDds_getFrameHeaderSize;
                 }
@@ -2290,6 +2292,9 @@ size_t ZSTD_decompressStream(ZSTD_DStream* zds, ZSTD_outBuffer* output, ZSTD_inB
                 zds->stage = ZSTDds_skipFrame;
             } else {
                 FORWARD_IF_ERROR(ZSTD_decodeFrameHeader(zds, zds->headerBuffer, zds->lhSize), "");
+                /* Unlike the bufferless API, this path reads the frame header
+                 * without passing it through ZSTD_decompressContinue(). */
+                zds->processedCSize = zds->lhSize;
                 zds->expected = ZSTD_blockHeaderSize;
                 zds->stage = ZSTDds_decodeBlockHeader;
             }
