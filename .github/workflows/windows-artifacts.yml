@@ -2,7 +2,8 @@ name: windows-artifacts
 
 on:
   push:
-    branches: [ test_artifacts, win_artifacts, release ]
+    # Remove fix-win-dll-package after validating this workflow.
+    branches: [ test_artifacts, win_artifacts, release, fix-win-dll-package ]
   release:
     types:
       - published
@@ -91,6 +92,27 @@ jobs:
           .\lib\dll\example\build_package.bat
           if ($LASTEXITCODE -ne 0) { exit 1 }
           mv bin/ zstd-${{ github.ref_name }}-${{matrix.ziparch}}/
+
+      - name: Add MSBuild to PATH
+        if: matrix.shell == 'msys2'
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # tag=v3.0.0
+
+      - name: Test packaged Visual Studio example
+        if: matrix.shell == 'msys2'
+        shell: pwsh
+        run: |
+          # Build outside the checkout so repository headers cannot fill package gaps.
+          $package = Join-Path $env:RUNNER_TEMP "zstd-${{ matrix.ziparch }}"
+          Copy-Item -Recurse "zstd-${{ github.ref_name }}-${{ matrix.ziparch }}" $package
+          if (-not (Test-Path "$package\dll\libzstd.lib" -PathType Leaf)) {
+            throw "Missing packaged DLL import library: dll\libzstd.lib"
+          }
+          $platform = "${{ matrix.env == 'i686' && 'Win32' || 'x64' }}"
+          msbuild "$package\example\fullbench-dll.sln" /m /t:Rebuild /verbosity:minimal /p:Configuration=Release /p:Platform=$platform /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "$package\example\bin\${platform}_Release\fullbench-dll.exe" -PathType Leaf)) {
+            throw "The packaged solution did not produce fullbench-dll.exe"
+          }
 
       - name: Publish zstd-$VERSION-${{matrix.ziparch}}.zip for manual inspection
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
