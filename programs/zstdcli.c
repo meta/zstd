@@ -1728,7 +1728,8 @@ int main(int argCount, const char** unusedArgv)
             fprintf(stderr, "zstd: error converting command line arguments \n");
             return 1;
         }
-        ret = zstdMain(argCount, (const char**)argv);
+        /* zstdMain() only reads the arguments : go through void* to avoid -Wcast-qual */
+        ret = zstdMain(argCount, (const char**)(void*)argv);
         UTIL_freeUtf8Argv(argCount, argv);
         return ret;
     }
