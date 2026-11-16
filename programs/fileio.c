@@ -1187,11 +1187,14 @@ static void FIO_initDict(FIO_Dict_t* dict, const char* fileName, FIO_prefs_t* co
 
 
 /* FIO_checkFilenameCollisions() :
- * Checks for and warns if there are any files that would have the same output path
+ * Checks for files that would have the same output path.
+ * NULL entries in filenameTable are ignored.
+ * Returns non-zero if there is any collision.
  */
-int FIO_checkFilenameCollisions(const char** filenameTable, unsigned nbFiles) {
-    const char **filenameTableSorted, *prevElem, *filename;
-    unsigned u;
+int FIO_checkFilenameCollisions(const char* const* filenameTable, unsigned nbFiles) {
+    const char **filenameTableSorted, *filename;
+    unsigned u, nbNames = 0;
+    int collision = 0;
 
     filenameTableSorted = (const char**) malloc(sizeof(char*) * nbFiles);
     if (!filenameTableSorted) {
@@ -1200,25 +1203,28 @@ int FIO_checkFilenameCollisions(const char** filenameTable, unsigned nbFiles) {
     }
 
     for (u = 0; u < nbFiles; ++u) {
+        if (filenameTable[u] == NULL) continue;
         filename = strrchr(filenameTable[u], PATH_SEP);
         if (filename == NULL) {
-            filenameTableSorted[u] = filenameTable[u];
+            filenameTableSorted[nbNames++] = filenameTable[u];
         } else {
-            filenameTableSorted[u] = filename+1;
+            filenameTableSorted[nbNames++] = filename+1;
         }
     }
 
-    qsort((void*)filenameTableSorted, nbFiles, sizeof(char*), UTIL_compareStr);
-    prevElem = filenameTableSorted[0];
-    for (u = 1; u < nbFiles; ++u) {
+    qsort((void*)filenameTableSorted, nbNames, sizeof(char*), UTIL_compareStr);
+    for (u = 1; u < nbNames; ++u) {
+        const char* const prevElem = filenameTableSorted[u-1];
         if (strcmp(prevElem, filenameTableSorted[u]) == 0) {
-            DISPLAYLEVEL(2, "WARNING: Two files have same filename: %s\n", prevElem);
+            DISPLAYLEVEL(1, "zstd: %s: multiple input files map to the same output file name\n", prevElem);
+            collision = 1;
         }
-        prevElem = filenameTableSorted[u];
     }
+    if (collision)
+        DISPLAYLEVEL(1, "zstd: no files were processed; --output-dir-mirror can preserve the input directory structure\n");
 
     free((void*)filenameTableSorted);
-    return 0;
+    return collision;
 }
 
 static const char*
@@ -2557,6 +2563,12 @@ int FIO_compressMultipleFilenames(FIO_ctx_t* const fCtx,
         if (outMirroredRootDirName)
             UTIL_mirrorSourceFilesDirectories(inFileNamesTable, (unsigned)fCtx->nbFilesTotal, outMirroredRootDirName);
 
+        if (outDirName && !outMirroredRootDirName
+          && FIO_checkFilenameCollisions(inFileNamesTable, (unsigned)fCtx->nbFilesTotal)) {
+            FIO_freeCResources(&ress);
+            return 1;
+        }
+
         for (; fCtx->currFileIdx < fCtx->nbFilesTotal; ++fCtx->currFileIdx) {
             const char* const srcFileName = inFileNamesTable[fCtx->currFileIdx];
             const char* dstFileName = NULL;
@@ -2577,9 +2589,6 @@ int FIO_compressMultipleFilenames(FIO_ctx_t* const fCtx,
             if (!status) fCtx->nbFilesProcessed++;
             error |= status;
         }
-
-        if (outDirName)
-            FIO_checkFilenameCollisions(inFileNamesTable , (unsigned)fCtx->nbFilesTotal);
     }
 
     if (FIO_shouldDisplayMultipleFileSummary(fCtx)) {
@@ -3389,6 +3398,40 @@ FIO_determineDstName(const char* srcFileName, const char* outDirName)
     /* note : dstFileNameBuffer memory is not going to be free */
 }
 
+/* FIO_createDstNamesTable() :
+ * Determines the destination name of each source file in outDirName.
+ * Entries are NULL for files whose destination name can't be determined.
+ * Free the result with FIO_freeDstNamesTable().
+ */
+static char**
+FIO_createDstNamesTable(const char** srcNamesTable, unsigned nbFiles, const char* outDirName)
+{
+    unsigned u;
+    char** const dstNamesTable = (char**)calloc(nbFiles, sizeof(char*));
+    if (dstNamesTable == NULL)
+        EXM_THROW(74, "%s : not enough memory for dstNamesTable", strerror(errno));
+    for (u = 0; u < nbFiles; ++u) {
+        const char* const dstFileName = FIO_determineDstName(srcNamesTable[u], outDirName);
+        if (dstFileName != NULL) {
+            size_t const dstFileNameSize = strlen(dstFileName) + 1;
+            dstNamesTable[u] = (char*)malloc(dstFileNameSize);
+            if (dstNamesTable[u] == NULL)
+                EXM_THROW(74, "%s : not enough memory for dstFileName", strerror(errno));
+            memcpy(dstNamesTable[u], dstFileName, dstFileNameSize);
+        }
+    }
+    return dstNamesTable;
+}
+
+static void FIO_freeDstNamesTable(char** dstNamesTable, unsigned nbFiles)
+{
+    unsigned u;
+    if (dstNamesTable == NULL) return;
+    for (u = 0; u < nbFiles; ++u)
+        free(dstNamesTable[u]);
+    free(dstNamesTable);
+}
+
 int
 FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
                                 FIO_prefs_t* const prefs,
@@ -3420,8 +3463,19 @@ FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
             EXM_THROW(72, "Write error : %s : cannot properly close output file",
                         strerror(errno));
     } else {
+        char** dstNamesTable = NULL;
         if (outMirroredRootDirName)
             UTIL_mirrorSourceFilesDirectories(srcNamesTable, (unsigned)fCtx->nbFilesTotal, outMirroredRootDirName);
+
+        if (outDirName && !outMirroredRootDirName) {
+            /* different suffixes can map to the same destination, e.g. a.tar.zst and a.tzst */
+            dstNamesTable = FIO_createDstNamesTable(srcNamesTable, (unsigned)fCtx->nbFilesTotal, outDirName);
+            if (FIO_checkFilenameCollisions((const char* const*)dstNamesTable, (unsigned)fCtx->nbFilesTotal)) {
+                FIO_freeDstNamesTable(dstNamesTable, (unsigned)fCtx->nbFilesTotal);
+                FIO_freeDResources(ress);
+                return 1;
+            }
+        }
 
         for (; fCtx->currFileIdx < fCtx->nbFilesTotal; fCtx->currFileIdx++) {   /* create dstFileName */
             const char* const srcFileName = srcNamesTable[fCtx->currFileIdx];
@@ -3434,6 +3488,8 @@ FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
                 } else {
                     DISPLAYLEVEL(2, "zstd: --output-dir-mirror cannot decompress '%s' into '%s'\n", srcFileName, outMirroredRootDirName);
                 }
+            } else if (dstNamesTable) {
+                dstFileName = dstNamesTable[fCtx->currFileIdx];
             } else {
                 dstFileName = FIO_determineDstName(srcFileName, outDirName);
             }
@@ -3442,8 +3498,7 @@ FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
             if (!status) fCtx->nbFilesProcessed++;
             error |= status;
         }
-        if (outDirName)
-            FIO_checkFilenameCollisions(srcNamesTable , (unsigned)fCtx->nbFilesTotal);
+        FIO_freeDstNamesTable(dstNamesTable, (unsigned)fCtx->nbFilesTotal);
     }
 
     if (FIO_shouldDisplayMultipleFileSummary(fCtx)) {
