@@ -312,6 +312,56 @@ zstd tmp -fo tmp && die "zstd compression overwrote the input file"
 zstd tmp.zst -dfo tmp.zst && die "zstd decompression overwrote the input file"
 println "test: detect that input file does not exist"
 zstd nothere && die "zstd hasn't detected that input file does not exist"
+println "test: non-ASCII file names (#3882)"
+# File names are UTF-8 encoded. Windows narrow APIs use the ANSI code page instead,
+# which maps the Latin-1 name (ö) to a console-specific character when displayed,
+# and cannot represent the Japanese and Cyrillic names at all.
+LATIN_NAME="v$(printf '\303\266')gel.txt"                  # vögel.txt
+JAPANESE_NAME="$(printf '\343\203\246\343\203\213\343\202\263\343\203\274\343\203\211')"                              # ユニコード
+CYRILLIC_NAME="$(printf '\320\277\321\200\320\270\320\262\320\265\321\202')"                              # привет
+JAPANESE_DIR="$(printf '\343\203\207\343\202\243\343\203\254\343\202\257\343\203\210\343\203\252')"                               # ディレクトリ
+rm -rf -- "$LATIN_NAME"* "$JAPANESE_NAME"* "$CYRILLIC_NAME"* "$JAPANESE_DIR" tmpUnicodeList
+for name in "$LATIN_NAME" "$JAPANESE_NAME" "$CYRILLIC_NAME"; do
+    println "hello $name" > "$name"
+    cp -- "$name" "$name.ref"
+    zstd -v -f "$name" 2>&1 | $GREP "$name"                 # name must be reported as is
+    test -f "$name.zst" || die "failed to create $name.zst"
+    zstd -t "$name.zst"
+    rm -f -- "$name"
+    zstd -d -q "$name.zst"
+    cmp -- "$name" "$name.ref" || die "round trip of $name altered content"
+    rm -f -- "$name"
+    zstd -d -q "$name.zst" -o "$name.out"                   # non-ASCII explicit output name
+    cmp -- "$name.out" "$name.ref" || die "decompression of $name.zst into $name.out altered content"
+    zstd -q -c "$name.ref" | zstd -d -q -c | cmp -- - "$name.ref" || die "stdout must stay binary-clean"
+    zstd -q --rm -f "$name.ref"                             # remove() of a non-ASCII name
+    test ! -f "$name.ref" || die "--rm failed to remove $name.ref"
+    rm -f -- "$name" "$name.zst" "$name.out" "$name.ref.zst"
+done
+println "test: non-ASCII directory, recursive mode and file list (#3882)"
+mkdir -- "$JAPANESE_DIR"
+println "hello" > "$JAPANESE_DIR/$JAPANESE_NAME"
+println "world" > "$JAPANESE_DIR/$CYRILLIC_NAME"
+zstd -q -r "$JAPANESE_DIR"                                  # directory traversal must find both
+test -f "$JAPANESE_DIR/$JAPANESE_NAME.zst" || die "recursion missed $JAPANESE_NAME"
+test -f "$JAPANESE_DIR/$CYRILLIC_NAME.zst" || die "recursion missed $CYRILLIC_NAME"
+rm -f -- "$JAPANESE_DIR/$JAPANESE_NAME" "$JAPANESE_DIR/$CYRILLIC_NAME"
+zstd -q -d -r --rm "$JAPANESE_DIR"
+test -f "$JAPANESE_DIR/$JAPANESE_NAME" || die "recursive decompression missed $JAPANESE_NAME"
+test ! -f "$JAPANESE_DIR/$JAPANESE_NAME.zst" || die "--rm did not remove $JAPANESE_NAME.zst"
+println "$JAPANESE_DIR/$CYRILLIC_NAME" > tmpUnicodeList
+rm -f -- "$JAPANESE_DIR/$CYRILLIC_NAME.zst"
+zstd -q --filelist=tmpUnicodeList
+test -f "$JAPANESE_DIR/$CYRILLIC_NAME.zst" || die "--filelist failed to process $CYRILLIC_NAME"
+zstd -q -f --output-dir-flat="$JAPANESE_DIR" tmp                      # non-ASCII output directory
+test -f "$JAPANESE_DIR/tmp.zst" || die "--output-dir-flat failed on a non-ASCII directory"
+println "test: non-ASCII dictionary name (#3882)"
+cp -- tmp "$JAPANESE_DIR/$JAPANESE_NAME.dict"
+zstd -q -f -D "$JAPANESE_DIR/$JAPANESE_NAME.dict" tmp -o tmpUnicodeDict.zst
+zstd -q -d -D "$JAPANESE_DIR/$JAPANESE_NAME.dict" tmpUnicodeDict.zst -c | cmp -- - tmp || die "dictionary round trip failed"
+zstd -q -f --patch-from="$JAPANESE_DIR/$JAPANESE_NAME.dict" tmp -o tmpUnicodeDict.zst
+zstd -q -d --patch-from="$JAPANESE_DIR/$JAPANESE_NAME.dict" tmpUnicodeDict.zst -c | cmp -- - tmp || die "--patch-from round trip failed"
+rm -rf -- "$JAPANESE_DIR" tmpUnicodeList tmpUnicodeDict.zst
 println "test: --[no-]compress-literals"
 zstd tmp -c --no-compress-literals -1       | zstd -t
 zstd tmp -c --no-compress-literals --fast=1 | zstd -t

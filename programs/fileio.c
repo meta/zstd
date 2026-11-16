@@ -402,7 +402,7 @@ static void INThandler(int sig)
 #endif
     if (g_artefact) {
         assert(UTIL_isRegularFile(g_artefact));
-        remove(g_artefact);
+        UTIL_remove(g_artefact);
     }
     DISPLAY("\n");
     exit(2);
@@ -799,7 +799,7 @@ static int FIO_removeFile(const char* path)
         UTIL_chmod(path, &statbuf, _S_IWRITE);
     }
 #endif
-    return remove(path);
+    return UTIL_remove(path);
 }
 
 /** FIO_openSrcFile() :
@@ -835,7 +835,7 @@ static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, const char* srcFile
         return NULL;
     }
 
-    {   FILE* const f = fopen(srcFileName, "rb");
+    {   FILE* const f = UTIL_fopen(srcFileName, "rb");
         if (f == NULL) {
             DISPLAYLEVEL(1, "zstd: %s: %s \n", srcFileName, strerror(errno));
             return NULL;
@@ -922,7 +922,7 @@ FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
             /* still exists only if remove() failed */
             dstExists = FIO_removeFile(dstFileName) != 0;
         } else {
-            (void)remove(dstFileName);  /* dangling link */
+            (void)UTIL_remove(dstFileName);  /* dangling link */
         }
     }
 
@@ -932,7 +932,7 @@ FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
         /* Windows requires opening the file as a "binary" file to avoid
          * mangling. This macro doesn't exist on unix. */
         const int openflags = O_WRONLY|O_CREAT|O_TRUNC|O_BINARY;
-        const int fd = _open(dstFileName, openflags, mode);
+        const int fd = UTIL_open(dstFileName, openflags, mode);
         FILE* f = NULL;
         if (fd != -1) {
             f = _fdopen(fd, "wb");
@@ -1032,7 +1032,7 @@ static size_t FIO_setDictBufferMalloc(FIO_Dict_t* dict, const char* fileName, FI
 
     DISPLAYLEVEL(4,"Loading %s as dictionary \n", fileName);
 
-    fileHandle = fopen(fileName, "rb");
+    fileHandle = UTIL_fopen(fileName, "rb");
 
     if (fileHandle == NULL) {
         EXM_THROW(33, "Couldn't open dictionary %s: %s", fileName, strerror(errno));
@@ -1124,7 +1124,12 @@ static size_t FIO_setDictBufferMMap(FIO_Dict_t* dict, const char* fileName, FIO_
 
     DISPLAYLEVEL(4,"Loading %s as dictionary \n", fileName);
 
-    fileHandle = CreateFileA(fileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_READONLY, NULL);
+    {   wchar_t* const wFileName = UTIL_utf8ToUtf16(fileName);
+        fileHandle = wFileName
+                   ? CreateFileW(wFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_READONLY, NULL)
+                   : INVALID_HANDLE_VALUE;
+        free(wFileName);
+    }
 
     if (fileHandle == INVALID_HANDLE_VALUE) {
         EXM_THROW(33, "Couldn't open dictionary %s: %s", fileName, strerror(errno));

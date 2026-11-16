@@ -75,7 +75,7 @@ static const size_t maxMemory = (sizeof(size_t) == 4)
  ***************************************/
 #define DISPLAY(...)                  \
     {                                 \
-        fprintf(stderr, __VA_ARGS__); \
+        UTIL_fprintf(stderr, __VA_ARGS__); \
         fflush(NULL);                 \
     }
 #define DISPLAYLEVEL(l, ...)  \
@@ -86,7 +86,7 @@ static const size_t maxMemory = (sizeof(size_t) == 4)
  * progression;   4 : + information */
 #define OUTPUT(...)                   \
     {                                 \
-        fprintf(stdout, __VA_ARGS__); \
+        UTIL_fprintf(stdout, __VA_ARGS__); \
         fflush(NULL);                 \
     }
 #define OUTPUTLEVEL(l, ...)  \
@@ -1091,7 +1091,7 @@ static int BMK_loadFiles(
             nbFiles  = n; /* stop after this file */
         }
 
-        {   FILE* const f = fopen(filename, "rb");
+        {   FILE* const f = UTIL_fopen(filename, "rb");
             if (f == NULL) {
                 RETURN_ERROR_INT(
                         10, "cannot open file %s", filename);
