@@ -291,6 +291,28 @@ println "test : decompress into stdout"
 zstd -d tmpCompressed -c > tmpResult    # decompression using stdout
 zstd --decompress tmpCompressed -c > tmpResult
 zstd --decompress tmpCompressed --stdout > tmpResult
+# Reading an explicit symlink is safe when no file output is created.
+# Recursive directory traversal must still avoid links by default.
+if [ "$isWindows" != true ]; then
+    println "test : read symbolic links with stdout, test and list modes"
+    ln -sfn tmp.zst tmpSymlink.zst
+    zstd -dc tmpSymlink.zst > tmpResult
+    $DIFF -q tmp tmpResult
+    zstd --decompress --stdout tmpSymlink.zst > tmpResult
+    $DIFF -q tmp tmpResult
+    zstd -c tmpSymlink.zst | zstd -dc > tmpResult
+    $DIFF -q tmp.zst tmpResult
+    zstd -t tmpSymlink.zst
+    zstd -l tmpSymlink.zst > $INTOVOID
+    zstd --rm -dc tmpSymlink.zst > tmpResult
+    $DIFF -q tmp tmpResult
+    test -L tmpSymlink.zst
+    test -f tmp.zst
+    zstd -d tmpSymlink.zst 2> tmpSymlinkErr && die "Must still refuse links for on-disk output"
+    $GREP "symbolic link" tmpSymlinkErr
+    test ! -e tmpSymlink
+    rm -f tmpSymlink.zst tmpSymlinkErr
+fi
 println "test : decompress from stdin into stdout"
 zstd -dc   < tmp.zst > $INTOVOID   # combine decompression, stdin & stdout
 zstd -dc - < tmp.zst > $INTOVOID
