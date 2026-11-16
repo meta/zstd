@@ -319,6 +319,22 @@ static void ZSTD_clearDict(ZSTD_DCtx* dctx)
     dctx->dictUses = ZSTD_dont_use;
 }
 
+/* Abandon any active or failed streaming session.
+ * This is the implementation of ZSTD_reset_session_only.
+ * Single-shot entry points call it first, so that a DCtx left mid-stream
+ * (or in an undefined state after a streaming error) can be reused, and
+ * so that it is returned to a clean streaming state afterwards. */
+static void ZSTD_DCtx_resetSession(ZSTD_DCtx* dctx)
+{
+    /* A prefix is only used once : if a frame was started, it is abandoned now,
+     * so the prefix must not leak into the next frame */
+    if (dctx->streamStage != zdss_init && dctx->dictUses == ZSTD_use_once)
+        ZSTD_clearDict(dctx);
+    dctx->streamStage = zdss_init;
+    dctx->noForwardProgress = 0;
+    dctx->isFrameDecompression = 1;
+}
+
 /* Discard borrowed dictionary references without freeing the DDicts. */
 static void ZSTD_clearDDictSet(ZSTD_DCtx* dctx)
 {
@@ -1188,6 +1204,7 @@ size_t ZSTD_decompress_usingDict(ZSTD_DCtx* dctx,
                            const void* src, size_t srcSize,
                            const void* dict, size_t dictSize)
 {
+    ZSTD_DCtx_resetSession(dctx);
     return ZSTD_decompressMultiFrame(dctx, dst, dstCapacity, src, srcSize, dict, dictSize, NULL, 0);
 }
 
@@ -1212,12 +1229,16 @@ static ZSTD_DDict const* ZSTD_getDDict(ZSTD_DCtx* dctx)
 
 size_t ZSTD_decompressDCtx(ZSTD_DCtx* dctx, void* dst, size_t dstCapacity, const void* src, size_t srcSize)
 {
+    /* Reset first: this may discard a prefix abandoned by an unfinished
+     * stream, which must happen before the dictionary is resolved. */
+    ZSTD_DCtx_resetSession(dctx);
     if (dctx->refMultipleDDicts && dctx->ddictSet)
         return ZSTD_decompressMultiFrame(dctx, dst, dstCapacity, src, srcSize,
                                          NULL, 0, NULL, 1);
     /* Preserve the single-dictionary behavior: resolve once for the entire
      * call, including concatenated frames and single-use prefixes. */
-    return ZSTD_decompress_usingDDict(dctx, dst, dstCapacity, src, srcSize, ZSTD_getDDict(dctx));
+    return ZSTD_decompressMultiFrame(dctx, dst, dstCapacity, src, srcSize,
+                                     NULL, 0, ZSTD_getDDict(dctx), 0);
 }
 
 
@@ -1704,6 +1725,7 @@ size_t ZSTD_decompress_usingDDict(ZSTD_DCtx* dctx,
                             const void* src, size_t srcSize,
                             const ZSTD_DDict* ddict)
 {
+    ZSTD_DCtx_resetSession(dctx);
     return ZSTD_decompressMultiFrame(dctx, dst, dstCapacity, src, srcSize,
                                      NULL, 0,
                                      ddict, 0);
@@ -2006,13 +2028,7 @@ size_t ZSTD_DCtx_reset(ZSTD_DCtx* dctx, ZSTD_ResetDirective reset)
 {
     if ( (reset == ZSTD_reset_session_only)
       || (reset == ZSTD_reset_session_and_parameters) ) {
-        /* A prefix is only used once : if a frame was started, it is abandoned now,
-         * so the prefix must not leak into the next frame */
-        if (dctx->streamStage != zdss_init && dctx->dictUses == ZSTD_use_once)
-            ZSTD_clearDict(dctx);
-        dctx->streamStage = zdss_init;
-        dctx->noForwardProgress = 0;
-        dctx->isFrameDecompression = 1;
+        ZSTD_DCtx_resetSession(dctx);
     }
     if ( (reset == ZSTD_reset_parameters)
       || (reset == ZSTD_reset_session_and_parameters) ) {
@@ -2268,10 +2284,11 @@ size_t ZSTD_decompressStream(ZSTD_DStream* zds, ZSTD_outBuffer* output, ZSTD_inB
                 size_t const cSize = ZSTD_findFrameCompressedSize_advanced(istart, (size_t)(iend-istart), zds->format);
                 if (cSize <= (size_t)(iend-istart)) {
                     /* shortcut : using single-pass mode */
-                    size_t const decompressedSize = ZSTD_decompress_usingDDict(zds, op, (size_t)(oend-op), istart, cSize,
-                                                    useDDictSet ? frameDDict : ZSTD_getDDict(zds));
+                    /* Not ZSTD_decompress_usingDDict(), which resets the streaming session */
+                    size_t const decompressedSize = ZSTD_decompressMultiFrame(zds, op, (size_t)(oend-op), istart, cSize,
+                                                    NULL, 0, useDDictSet ? frameDDict : ZSTD_getDDict(zds), 0);
                     if (ZSTD_isError(decompressedSize)) return decompressedSize;
-                    DEBUGLOG(4, "shortcut to single-pass ZSTD_decompress_usingDDict()");
+                    DEBUGLOG(4, "shortcut to single-pass ZSTD_decompressMultiFrame()");
                     ip = istart + cSize;
                     op = op ? op + decompressedSize : op; /* can occur if frameContentSize = 0 (empty frame) */
                     zds->expected = 0;

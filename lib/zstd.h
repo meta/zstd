@@ -308,6 +308,9 @@ ZSTDLIB_API size_t     ZSTD_freeDCtx(ZSTD_DCtx* dctx);  /* accept NULL pointer *
  *  Same as ZSTD_decompress(),
  *  requires an allocated ZSTD_DCtx.
  *  Compatible with sticky parameters (see below).
+ *  The streaming session of @dctx is reset first, as with
+ *  ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only).
+ *  See ZSTD_DCtx_refPrefix() for the effect on a referenced prefix.
  */
 ZSTDLIB_API size_t ZSTD_decompressDCtx(ZSTD_DCtx* dctx,
                                        void* dst, size_t dstCapacity,
@@ -689,7 +692,11 @@ ZSTDLIB_API size_t ZSTD_DCtx_setParameter(ZSTD_DCtx* dctx, ZSTD_dParameter param
 /*! ZSTD_DCtx_reset() :
  *  Return a DCtx to clean state.
  *  Session and parameters can be reset jointly or separately.
- *  Parameters can only be reset when no active frame is being decompressed.
+ *  ZSTD_reset_parameters can only be used when no frame is being decompressed;
+ *  otherwise it returns ZSTD_error_stage_wrong without resetting the parameters.
+ *  ZSTD_reset_session_and_parameters also abandons any active frame.
+ *  A successful parameter reset discards any referenced prefix or dictionary.
+ *  See ZSTD_DCtx_refPrefix() for the effect of a session-only reset on a prefix.
  * @return : 0, or an error code, which can be tested with ZSTD_isError()
  */
 ZSTDLIB_API size_t ZSTD_DCtx_reset(ZSTD_DCtx* dctx, ZSTD_ResetDirective reset);
@@ -943,8 +950,11 @@ ZSTDLIB_API size_t ZSTD_initDStream(ZSTD_DStream* zds);
  * Note: when an operation returns with an error code, the @zds state may be left in undefined state.
  *       It's UB to invoke `ZSTD_decompressStream()` on such a state.
  *       In order to re-use such a state, it must be first reset,
- *       which can be done explicitly (`ZSTD_DCtx_reset()`),
- *       or is implied for operations starting some new decompression job (`ZSTD_initDStream`, `ZSTD_decompressDCtx()`, `ZSTD_decompress_usingDict()`)
+ *       which can be done explicitly (`ZSTD_DCtx_reset(zds, ZSTD_reset_session_only)`),
+ *       or is implied for operations starting some new decompression job
+ *       (`ZSTD_initDStream()`, `ZSTD_decompressDCtx()`, `ZSTD_decompress_usingDict()`, `ZSTD_decompress_usingDDict()`).
+ *       The single-shot functions also leave the session clean:
+ *       streaming can start a new frame afterwards without an explicit reset.
  */
 ZSTDLIB_API size_t ZSTD_decompressStream(ZSTD_DStream* zds, ZSTD_outBuffer* output, ZSTD_inBuffer* input);
 
@@ -973,7 +983,9 @@ ZSTDLIB_API size_t ZSTD_compress_usingDict(ZSTD_CCtx* ctx,
  *  Dictionary must be identical to the one used during compression.
  *  Note : This function loads the dictionary, resulting in significant startup delay.
  *         It's intended for a dictionary used only once.
- *  Note : When `dict == NULL || dictSize < 8` no dictionary is used. */
+ *  Note : When `dict == NULL || dictSize < 8` no dictionary is used.
+ *  Note : The streaming session of @dctx is reset first, as with
+ *         ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only). */
 ZSTDLIB_API size_t ZSTD_decompress_usingDict(ZSTD_DCtx* dctx,
                                              void* dst, size_t dstCapacity,
                                        const void* src, size_t srcSize,
@@ -1031,7 +1043,9 @@ ZSTDLIB_API size_t      ZSTD_freeDDict(ZSTD_DDict* ddict);
 /*! ZSTD_decompress_usingDDict() :
  *  Decompression using a digested Dictionary.
  *  Recommended when same dictionary is used multiple times.
- *  Uses the supplied DDict, regardless of dictionaries referenced in dctx. */
+ *  Uses the supplied DDict, regardless of dictionaries referenced in dctx.
+ *  The streaming session of @dctx is reset first, as with
+ *  ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only). */
 ZSTDLIB_API size_t ZSTD_decompress_usingDDict(ZSTD_DCtx* dctx,
                                               void* dst, size_t dstCapacity,
                                         const void* src, size_t srcSize,
@@ -1191,19 +1205,40 @@ ZSTDLIB_API size_t ZSTD_DCtx_loadDictionary(ZSTD_DCtx* dctx, const void* dict, s
 ZSTDLIB_API size_t ZSTD_DCtx_refDDict(ZSTD_DCtx* dctx, const ZSTD_DDict* ddict);
 
 /*! ZSTD_DCtx_refPrefix() : Requires v1.4.0+
- *  Reference a prefix (single-usage dictionary) to decompress next frame.
+ *  Reference a prefix (single-usage dictionary) for decompression.
  *  This is the reverse operation of ZSTD_CCtx_refPrefix(),
  *  and must use the same prefix as the one used during compression.
- *  Prefix is **only used once**. Reference is discarded at end of frame.
- *  End of frame is reached when ZSTD_decompressStream() returns 0.
+ *  The prefix is **only used once**:
+ *  - ZSTD_decompressDCtx() uses it for exactly one call, including all frames
+ *    in concatenated input. The call consumes the prefix even if the input
+ *    is empty, contains only skippable frames, or produces an error.
+ *  - ZSTD_decompressStream() uses it until the first frame is completely
+ *    decoded and flushed, as indicated by a return value of 0. This includes
+ *    empty and skippable frames, even though they produce no output.
+ *  The explicit-dictionary functions ZSTD_decompress_usingDict() and
+ *  ZSTD_decompress_usingDDict() use their dictionary argument instead and
+ *  do not consume the prefix configured on the DCtx.
+ *
+ *  ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only) preserves an unused prefix
+ *  if streaming decompression has not started. Once streaming has started,
+ *  even with an incomplete header, a session-only reset abandons the frame
+ *  and discards the prefix. After a streaming error the DCtx may be in an
+ *  undefined state and must be reset before streaming can resume. Errors
+ *  returned before streaming starts may leave an unused prefix installed.
+ *  To unconditionally discard it, use ZSTD_reset_session_and_parameters,
+ *  or ZSTD_reset_parameters when no frame is active. The latter can fail
+ *  with ZSTD_error_stage_wrong during decompression.
  * @result : 0, or an error code (which can be tested with ZSTD_isError()).
- *  Note 1 : Adding any prefix (including NULL) invalidates any previously set prefix or dictionary,
+ *  Note 1 : Adding any prefix (including NULL or a zero-sized prefix) invalidates
+ *           any previously set prefix or dictionary,
  *           including the multiple-DDict reference table.
+ *           Successfully loading or referencing another dictionary, or calling
+ *           ZSTD_initDStream(), also discards the prefix.
  *  Note 2 : Prefix buffer is referenced. It **must** outlive decompression.
- *           Prefix buffer must remain unmodified up to the end of frame,
- *           reached when ZSTD_decompressStream() returns 0.
+ *           It must remain unmodified until the one-shot call returns, the
+ *           streaming frame completes, or the prefix is explicitly discarded.
  *  Note 3 : By default, the prefix is treated as raw content (ZSTD_dct_rawContent).
- *           Use ZSTD_CCtx_refPrefix_advanced() to alter dictMode (Experimental section)
+ *           Use ZSTD_DCtx_refPrefix_advanced() to alter dictMode (Experimental section)
  *  Note 4 : Referencing a raw content prefix has almost no cpu nor memory cost.
  *           A full dictionary is more costly, as it requires building tables.
  */
@@ -2495,7 +2530,9 @@ ZSTDLIB_STATIC_API size_t ZSTD_DCtx_loadDictionary_advanced(ZSTD_DCtx* dctx, con
 
 /*! ZSTD_DCtx_refPrefix_advanced() :
  *  Same as ZSTD_DCtx_refPrefix(), but gives finer control over
- *  how to interpret prefix content (automatic ? force raw mode (default) ? full mode only ?) */
+ *  how to interpret prefix content (automatic ? force raw mode (default) ? full mode only ?).
+ *  The prefix has the same single-use lifetime and reset behavior described
+ *  by ZSTD_DCtx_refPrefix(). */
 ZSTDLIB_STATIC_API size_t ZSTD_DCtx_refPrefix_advanced(ZSTD_DCtx* dctx, const void* prefix, size_t prefixSize, ZSTD_dictContentType_e dictContentType);
 
 /*! ZSTD_DCtx_setMaxWindowSize() :
