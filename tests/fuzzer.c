@@ -5311,6 +5311,58 @@ static int basicUnitTests(U32 const seed, double compressibility)
         }
         DISPLAYLEVEL(3, "OK \n");
 
+        DISPLAYLEVEL(3, "test%3i : dictionary IDs in the encoded error range (32-bit size_t) : ", testNb++);
+        /* On 32-bit, (size_t)-120 == 4294967176 :
+         * dictIDs above must not be confused with an error code while loading the dictionary. */
+        {   U32 const dictIDs[] = { 1U, 0x7FFFFFFFU, 0x80000000U,
+                                    0xFFFFFF88U /* last non-error value */,
+                                    0xFFFFFF89U /* first value in the error range */,
+                                    0xFFFFFFFFU };
+            size_t const nbDictIDs = sizeof(dictIDs) / sizeof(dictIDs[0]);
+            size_t const srcSize = MIN(CNBuffSize, (size_t)(16 KB));
+            void* const dictCopy = malloc(dictSize);
+            ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+            size_t n;
+            CHECK(dictCopy != NULL);
+            CHECK(dctx != NULL);
+            memcpy(dictCopy, dictBuffer, dictSize);
+            for (n = 0; n < nbDictIDs; n++) {
+                int mode;
+                MEM_writeLE32((char*)dictCopy + 4, dictIDs[n]);   /* after the magic number */
+                CHECK_EQ(ZSTD_getDictID_fromDict(dictCopy, dictSize), dictIDs[n]);
+                for (mode = 0; mode < 3; mode++) {
+                    size_t r;
+                    if (mode == 0) {   /* ZSTD_compress_usingDict() */
+                        cSize = ZSTD_compress_usingDict(cctx, compressedBuffer, compressedBufferSize,
+                                                        CNBuffer, srcSize, dictCopy, dictSize, 3);
+                    } else if (mode == 1) {   /* ZSTD_CDict */
+                        ZSTD_CDict* const cdict = ZSTD_createCDict(dictCopy, dictSize, 3);
+                        CHECK(cdict != NULL);
+                        CHECK_EQ(ZSTD_getDictID_fromCDict(cdict), dictIDs[n]);
+                        cSize = ZSTD_compress_usingCDict(cctx, compressedBuffer, compressedBufferSize,
+                                                         CNBuffer, srcSize, cdict);
+                        ZSTD_freeCDict(cdict);
+                    } else {   /* ZSTD_CCtx_loadDictionary() */
+                        CHECK_Z(ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters));
+                        CHECK_Z(ZSTD_CCtx_loadDictionary(cctx, dictCopy, dictSize));
+                        cSize = ZSTD_compress2(cctx, compressedBuffer, compressedBufferSize,
+                                               CNBuffer, srcSize);
+                    }
+                    CHECK_Z(cSize);
+                    CHECK_EQ(ZSTD_getDictID_fromFrame(compressedBuffer, cSize), dictIDs[n]);
+                    r = ZSTD_decompress_usingDict(dctx, decodedBuffer, CNBuffSize,
+                                                  compressedBuffer, cSize, dictCopy, dictSize);
+                    CHECK_Z(r);
+                    CHECK_EQ(r, srcSize);
+                    CHECK(!memcmp(decodedBuffer, CNBuffer, srcSize));
+                }
+            }
+            ZSTD_freeDCtx(dctx);
+            free(dictCopy);
+        }
+        CHECK_Z(ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters));
+        DISPLAYLEVEL(3, "OK \n");
+
         DISPLAYLEVEL(3, "test%3i : estimate CDict size : ", testNb++);
         {   ZSTD_compressionParameters const cParams = ZSTD_getCParams(1, CNBuffSize, dictSize);
             size_t const estimatedSize = ZSTD_estimateCDictSize_advanced(dictSize, cParams, ZSTD_dlm_byRef);
