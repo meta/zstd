@@ -1465,6 +1465,63 @@ static void test_blockSplitter_incompressibleExpansionProtection(unsigned testNb
     DISPLAYLEVEL(3, "OK \n");
 }
 
+static void test_targetCBlockSize_dstCapacity(unsigned testNb)
+{
+    static const size_t srcSizes[] = { 1300, 8 KB };
+    size_t const srcCapacity = 8 KB;
+    size_t const dstAllocation = 2 * ZSTD_compressBound(srcCapacity);
+    BYTE* const src = (BYTE*)malloc(srcCapacity);
+    BYTE* const dst = (BYTE*)malloc(dstAllocation);
+    BYTE* const decoded = (BYTE*)malloc(srcCapacity);
+    ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+    ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+    size_t input;
+
+    DISPLAYLEVEL(3, "test%3u : targetCBlockSize with short destinations : ", testNb);
+    CHECK(src != NULL && dst != NULL && decoded != NULL);
+    CHECK(cctx != NULL && dctx != NULL);
+
+    /* Generate Huffman and FSE table descriptions across multiple sub-blocks. */
+    RDG_genBuffer(src, srcCapacity, 0.5, 0. /*auto*/, 0);
+
+    CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 1));
+    CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_targetCBlockSize, 1340));
+    for (input = 0; input < COUNTOF(srcSizes); ++input) {
+        size_t const srcSize = srcSizes[input];
+        size_t const bound = ZSTD_compressBound(srcSize);
+        size_t capacity;
+        for (capacity = 0; capacity <= bound; ++capacity) {
+            size_t cSize, i;
+            memset(dst, 0xA5, dstAllocation);
+            cSize = ZSTD_compress2(cctx, dst, capacity, src, srcSize);
+            /* Check before handling errors: the original bug returned
+             * dstSize_tooSmall after already overwriting the destination. */
+            for (i = capacity; i < dstAllocation; ++i) {
+                if (dst[i] != 0xA5) {
+                    DISPLAY("targetCBlockSize wrote past capacity %zu "
+                            "at offset %zu (srcSize=%zu)\n", capacity, i, srcSize);
+                    exit(1);
+                }
+            }
+            if (ZSTD_isError(cSize)) {
+                CHECK_EQ(ZSTD_getErrorCode(cSize), ZSTD_error_dstSize_tooSmall);
+                CHECK_LT(capacity, bound);
+            } else {
+                CHECK(cSize <= capacity);
+                CHECK_EQ(ZSTD_decompressDCtx(dctx, decoded, srcCapacity, dst, cSize), srcSize);
+                CHECK_EQ(memcmp(decoded, src, srcSize), 0);
+            }
+        }
+    }
+
+    ZSTD_freeDCtx(dctx);
+    ZSTD_freeCCtx(cctx);
+    free(decoded);
+    free(dst);
+    free(src);
+    DISPLAYLEVEL(3, "OK \n");
+}
+
 size_t convertSequences_noRepcodes(SeqDef* dstSeqs, const ZSTD_Sequence* inSeqs,
     size_t nbSequences);
 
@@ -3832,6 +3889,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
     DISPLAYLEVEL(3, "OK \n");
 
     test_blockSplitter_incompressibleExpansionProtection(testNb++, seed);
+    test_targetCBlockSize_dstCapacity(testNb++);
 
     DISPLAYLEVEL(3, "test%3d : superblock uncompressible data: too many nocompress superblocks : ", testNb++);
     {
