@@ -71,8 +71,10 @@ test: example fitblk example_zstd fitblk_zstd zwrapbench minigzip minigzip_zstd 
 .PHONY: test-valgrind
 #test-valgrind: ZSTDLIBRARY = $(ZSTDLIBDIR)/libzstd.so
 test-valgrind: VALGRIND = LD_LIBRARY_PATH=$(ZSTDLIBDIR) valgrind --track-origins=yes --leak-check=full --error-exitcode=1
-test-valgrind: clean example fitblk example_zstd fitblk_zstd zwrapbench
+test-valgrind: clean example fitblk example_zstd fitblk_zstd zwrapbench gzfinishtest gzfinishtest_zstd
 	@echo "\n ---- valgrind tests ----"
+	$(VALGRIND) ./gzfinishtest
+	$(VALGRIND) ./gzfinishtest_zstd
 	$(VALGRIND) ./example
 	$(VALGRIND) ./example_zstd
 	$(VALGRIND) ./fitblk 10240 <$(TEST_FILE)

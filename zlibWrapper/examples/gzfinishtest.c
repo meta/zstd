@@ -14,6 +14,7 @@
  * with no data in between, then closes the file. The result must contain
  * exactly one gzip member : the file size must equal the size obtained when
  * writing the same data without the intermediate flushes.
+ * Data written after a Z_FINISH must still start a new member, which decodes.
  */
 
 #include <stdio.h>
@@ -54,6 +55,33 @@ static int writeMode(const char* path, int mode)
     return 0;
 }
 
+/* write, finish, write again, close : both members must decode */
+static int checkTwoMembers(const char* path)
+{
+    char buf[16];
+    int n;
+    gzFile file = gzopen(path, "wb");
+    if (file == NULL || gzwrite(file, "hello", 5) != 5
+        || gzflush(file, Z_FINISH) != Z_OK
+        || gzwrite(file, "world", 5) != 5
+        || gzclose(file) != Z_OK) {
+        fprintf(stderr, "gzfinishtest: writing two members failed\n");
+        return 1;
+    }
+    file = gzopen(path, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "gzfinishtest: gzopen for reading failed\n");
+        return 1;
+    }
+    n = gzread(file, buf, sizeof(buf));
+    gzclose(file);
+    if (n != 10 || memcmp(buf, "helloworld", 10) != 0) {
+        fprintf(stderr, "gzfinishtest: two members read back as %d bytes, not \"helloworld\"\n", n);
+        return 1;
+    }
+    return 0;
+}
+
 static long fileSize(const char* path)
 {
     FILE* const f = fopen(path, "rb");
@@ -81,6 +109,11 @@ int main(int argc, char** argv)
         fprintf(stderr, "gzfinishtest: file sizes differ : plain=%ld flushed=%ld twice=%ld "
                         "(spurious empty gzip member after Z_FINISH)\n",
                         plain, flushed, twice);
+        remove(name);
+        return 1;
+    }
+
+    if (checkTwoMembers(name)) {
         remove(name);
         return 1;
     }
