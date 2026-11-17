@@ -789,6 +789,74 @@ static int testLegacyRawLiteralOffsets(void)
     return 0;
 }
 
+#if (ZSTD_LEGACY_SUPPORT <= 5)
+/* Build a v0.5 frame with windowLog 11 (2 KB), and its decoded content :
+ * a raw block of prefixSize bytes, then a compressed block whose only sequence
+ * copies 4 bytes from offset 1000, inside the raw block, after 500 literals.
+ * It ends with 16 literals: the one-shot decoder wants room after the last match.
+ * The streaming decoder wraps its output buffer between the two blocks. */
+static size_t buildV05WrapFrame(unsigned char* dst, unsigned char* expected,
+                                size_t* expectedSize, unsigned prefixSize)
+{
+    /* Sequence section: nbSeq 1, then RLE LL/offset/ML tables and 3 bytes of dumps.
+     * The dumps hold litLength 500: 255, then LE16 500<<1.
+     * Table symbols: LL 63 (read the dumps), offset code 10 (512 + 9 bits), ML 0 (MINMATCH).
+     * Bitstream: the 9 offset bits (1000 - 512) under the stop bit. */
+    static const unsigned char sequences[] = { 1, 0x54, 3, 255, 0xE8, 0x03, 63, 10, 0, 0xE8, 0x03 };
+    unsigned const litLength = 500;
+    unsigned const litSize = litLength + 16;
+    size_t const blockSize = 2 + litSize + sizeof(sequences);
+    unsigned char* op = expected + prefixSize;
+    unsigned char* lits;
+    size_t pos = 0;
+    unsigned i;
+    dst[pos++] = 0x25; dst[pos++] = 0xB5; dst[pos++] = 0x2F; dst[pos++] = 0xFD;  /* v0.5 magic */
+    dst[pos++] = 0;  /* windowLog 11 */
+    dst[pos++] = (unsigned char)(0x40 | (prefixSize >> 16));  /* raw block */
+    dst[pos++] = (unsigned char)(prefixSize >> 8);
+    dst[pos++] = (unsigned char)prefixSize;
+    for (i = 0; i < prefixSize; i++) expected[i] = dst[pos++] = (unsigned char)i;
+    dst[pos++] = (unsigned char)(blockSize >> 16);  /* compressed block */
+    dst[pos++] = (unsigned char)(blockSize >> 8);
+    dst[pos++] = (unsigned char)blockSize;
+    dst[pos++] = (unsigned char)(0xA0 | (litSize >> 8));  /* raw literals, 2-byte header */
+    dst[pos++] = (unsigned char)litSize;
+    lits = dst + pos;
+    for (i = 0; i < litSize; i++) lits[i] = (unsigned char)(i * 7 + 3);  /* differ from the raw block */
+    pos += litSize;
+    memcpy(dst + pos, sequences, sizeof(sequences));
+    pos += sizeof(sequences);
+    dst[pos++] = 0xC0; dst[pos++] = 0; dst[pos++] = 0;  /* end of frame */
+
+    memcpy(op, lits, litLength);
+    op += litLength;
+    for (i = 0; i < 4; i++, op++) *op = op[-1000];
+    memcpy(op, lits + litLength, litSize - litLength);
+    op += litSize - litLength;
+    *expectedSize = (size_t)(op - expected);
+    return pos;
+}
+
+static int testV05StreamingWrap(void)
+{
+    /* 600: the second block overwrites history that its match still reads (#4553).
+     * 2048: the raw block fills the window, and the streaming decoder used to
+     *       keep no room for the next block (regression from the #4553 fix). */
+    static const unsigned prefixSizes[] = { 600, 2048 };
+    unsigned char frame[3000];
+    unsigned char expected[3000];
+    size_t i;
+    for (i = 0; i < sizeof(prefixSizes) / sizeof(prefixSizes[0]); ++i) {
+        size_t expectedSize;
+        size_t const frameSize = buildV05WrapFrame(frame, expected, &expectedSize, prefixSizes[i]);
+        DISPLAY("v0.5 streaming wrap, %u-byte first block\n", prefixSizes[i]);
+        if (testSimpleAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+        if (testStreamingAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+    }
+    return 0;
+}
+#endif
+
 int main(void)
 {
     size_t const blockSize = strlen(BLOCK);
@@ -839,6 +907,9 @@ int main(void)
         if (testLegacyZeroOffsets()) break;
         if (testLegacyBlockBounds()) break;
         if (testLegacyRawLiteralOffsets()) break;
+#if (ZSTD_LEGACY_SUPPORT <= 5)
+        if (testV05StreamingWrap()) break;
+#endif
         result = 0;
     } while (0);
 
