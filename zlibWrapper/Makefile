@@ -124,5 +124,5 @@ $(ZSTDLIBDIR)/libzstd.so:
 
 
 clean:
-	-$(RM) $(ZLIBWRAPPER_PATH)/*.o $(EXAMPLE_PATH)/*.o *.o foo.gz example$(EXT) example_zstd$(EXT) fitblk$(EXT) fitblk_zstd$(EXT) zwrapbench$(EXT) minigzip$(EXT) minigzip_zstd$(EXT)
+	-$(RM) $(ZLIBWRAPPER_PATH)/*.o $(EXAMPLE_PATH)/*.o *.o foo.gz example$(EXT) example_zstd$(EXT) fitblk$(EXT) fitblk_zstd$(EXT) zwrapbench$(EXT) minigzip$(EXT) minigzip_zstd$(EXT) gzfinishtest$(EXT) gzfinishtest_zstd$(EXT)
 	@echo Cleaning completed
