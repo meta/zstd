@@ -64,10 +64,6 @@ const char* const FRAME_V07;   /* content is at end of file, produced by v0.7.0 
 const char* const FRAME_V08;   /* content is at end of file, produced by v0.8.0 */
 const char* const BLOCK;      /* content is at end of file */
 
-/* crafted frame, see definition at end of file */
-#define FRAME_V04_WRAP_SIZE 1137
-const char* const FRAME_V04_WRAP;
-
 
 /* legacy formats older than v0.4 only offer a single-shot decoder :
  * ZSTD_decompressStream() answers version_unsupported on such frames
@@ -229,68 +225,6 @@ static int testStreamingAPI(const char* compressed, size_t compressedSize,
     free(outBuff);
     ZSTD_freeDStream(stream);
     if (error_code == 0) DISPLAY("Streaming API OK\n");
-    return error_code;
-}
-
-/* testStreamingMatchesOneShot() :
- * the one-shot decoder is the reference : the streaming decoder must
- * produce the exact same bytes on the same frame.
- * The output chunk is small and not block-aligned, so that flushes and
- * internal output buffer wraps happen at unaligned offsets. */
-static int testStreamingMatchesOneShot(const char* frame, size_t frameSize,
-                                       size_t decodedSize, const char* name)
-{
-    /* the one-shot decoder needs some slack past the last byte for its
-     * in-place literal copies, hence the extra 64 bytes */
-    char* const reference = (char*)malloc(decodedSize + 64);
-    char* const outBuff = (char*)malloc(decodedSize + 64);
-    ZSTD_DStream* const stream = ZSTD_createDStream();
-    ZSTD_inBuffer input = { frame, frameSize, 0 };
-    size_t outPos = 0;
-    int error_code = 0;
-
-    if (reference == NULL || outBuff == NULL || stream == NULL) {
-        DISPLAY("ERROR: Not enough memory\n");
-        error_code = 1;
-    }
-
-    if (!error_code) {
-        size_t const ret = ZSTD_decompress(reference, decodedSize + 64, frame, frameSize);
-        if (ZSTD_isError(ret) || ret != decodedSize) {
-            DISPLAY("ERROR: %s: one-shot decoder failed: %s\n",
-                    name, ZSTD_isError(ret) ? ZSTD_getErrorName(ret) : "wrong size");
-            error_code = 1;
-        }
-    }
-
-    while (!error_code) {
-        ZSTD_outBuffer output = { outBuff + outPos, 333, 0 };
-        if ((size_t)(outPos + output.size) > decodedSize) output.size = decodedSize - outPos;
-        {   size_t const ret = ZSTD_decompressStream(stream, &output, &input);
-            if (ZSTD_isError(ret)) {
-                DISPLAY("ERROR: %s: ZSTD_decompressStream: %s\n", name, ZSTD_getErrorName(ret));
-                error_code = 1;
-                break;
-            }
-            outPos += output.pos;
-            if (ret == 0) break;
-        }
-    }
-
-    if (!error_code && outPos != decodedSize) {
-        DISPLAY("ERROR: %s: streaming decoder produced %zu bytes instead of %zu\n",
-                name, outPos, decodedSize);
-        error_code = 1;
-    }
-    if (!error_code && memcmp(reference, outBuff, decodedSize) != 0) {
-        DISPLAY("ERROR: %s: streaming decoder output differs from one-shot decoder\n", name);
-        error_code = 1;
-    }
-
-    free(reference);
-    free(outBuff);
-    ZSTD_freeDStream(stream);
-    if (error_code == 0) DISPLAY("%s : streaming matches one-shot\n", name);
     return error_code;
 }
 
@@ -856,27 +790,32 @@ static int testLegacyRawLiteralOffsets(void)
 }
 
 #if (ZSTD_LEGACY_SUPPORT <= 5)
-/* Build a v0.5 frame with windowLog 11 (2 KB), and its decoded content :
+/* Build a v0.4 or v0.5 frame with windowLog 11 (2 KB), and its decoded content :
  * a raw block of prefixSize bytes, then a compressed block whose only sequence
  * copies 4 bytes from offset 1000, inside the raw block, after 500 literals.
  * It ends with 16 literals: the one-shot decoder wants room after the last match.
  * The streaming decoder wraps its output buffer between the two blocks. */
-static size_t buildV05WrapFrame(unsigned char* dst, unsigned char* expected,
-                                size_t* expectedSize, unsigned prefixSize)
+static size_t buildWrapFrame(unsigned version, unsigned char* dst, unsigned char* expected,
+                             size_t* expectedSize, unsigned prefixSize)
 {
-    /* Sequence section: nbSeq 1, then RLE LL/offset/ML tables and 3 bytes of dumps.
-     * The dumps hold litLength 500: 255, then LE16 500<<1.
+    /* Sequence section: nbSeq 1 (LE16 in v0.4), then RLE LL/offset/ML tables
+     * (0xA8 in v0.4, 0x54 in v0.5) and the dumps.
+     * The dumps hold litLength 500: 255, then LE24 500 (v0.4) or LE16 500<<1 (v0.5).
      * Table symbols: LL 63 (read the dumps), offset code 10 (512 + 9 bits), ML 0 (MINMATCH).
      * Bitstream: the 9 offset bits (1000 - 512) under the stop bit. */
-    static const unsigned char sequences[] = { 1, 0x54, 3, 255, 0xE8, 0x03, 63, 10, 0, 0xE8, 0x03 };
+    static const unsigned char sequencesV04[] = { 1, 0, 0xA8, 4, 255, 0xF4, 0x01, 0, 63, 10, 0, 0xE8, 0x03 };
+    static const unsigned char sequencesV05[] = { 1, 0x54, 3, 255, 0xE8, 0x03, 63, 10, 0, 0xE8, 0x03 };
+    const unsigned char* const sequences = (version == 4) ? sequencesV04 : sequencesV05;
+    size_t const seqSize = (version == 4) ? sizeof(sequencesV04) : sizeof(sequencesV05);
     unsigned const litLength = 500;
     unsigned const litSize = litLength + 16;
-    size_t const blockSize = 2 + litSize + sizeof(sequences);
+    size_t const blockSize = ((version == 4) ? 3 : 2) + litSize + seqSize;
     unsigned char* op = expected + prefixSize;
     unsigned char* lits;
     size_t pos = 0;
     unsigned i;
-    dst[pos++] = 0x25; dst[pos++] = 0xB5; dst[pos++] = 0x2F; dst[pos++] = 0xFD;  /* v0.5 magic */
+    dst[pos++] = (unsigned char)(0x20 + version);  /* magic */
+    dst[pos++] = 0xB5; dst[pos++] = 0x2F; dst[pos++] = 0xFD;
     dst[pos++] = 0;  /* windowLog 11 */
     dst[pos++] = (unsigned char)(0x40 | (prefixSize >> 16));  /* raw block */
     dst[pos++] = (unsigned char)(prefixSize >> 8);
@@ -885,13 +824,19 @@ static size_t buildV05WrapFrame(unsigned char* dst, unsigned char* expected,
     dst[pos++] = (unsigned char)(blockSize >> 16);  /* compressed block */
     dst[pos++] = (unsigned char)(blockSize >> 8);
     dst[pos++] = (unsigned char)blockSize;
-    dst[pos++] = (unsigned char)(0xA0 | (litSize >> 8));  /* raw literals, 2-byte header */
-    dst[pos++] = (unsigned char)litSize;
+    if (version == 4) {  /* raw literals: LE24 (litSize << 2) | 1 */
+        dst[pos++] = (unsigned char)((litSize << 2) | 1);
+        dst[pos++] = (unsigned char)(litSize >> 6);
+        dst[pos++] = (unsigned char)(litSize >> 14);
+    } else {  /* raw literals, 2-byte header */
+        dst[pos++] = (unsigned char)(0xA0 | (litSize >> 8));
+        dst[pos++] = (unsigned char)litSize;
+    }
     lits = dst + pos;
     for (i = 0; i < litSize; i++) lits[i] = (unsigned char)(i * 7 + 3);  /* differ from the raw block */
     pos += litSize;
-    memcpy(dst + pos, sequences, sizeof(sequences));
-    pos += sizeof(sequences);
+    memcpy(dst + pos, sequences, seqSize);
+    pos += seqSize;
     dst[pos++] = 0xC0; dst[pos++] = 0; dst[pos++] = 0;  /* end of frame */
 
     memcpy(op, lits, litLength);
@@ -903,21 +848,25 @@ static size_t buildV05WrapFrame(unsigned char* dst, unsigned char* expected,
     return pos;
 }
 
-static int testV05StreamingWrap(void)
+static int testStreamingWrap(void)
 {
-    /* 600: the second block overwrites history that its match still reads (#4553).
-     * 2048: the raw block fills the window, and the streaming decoder used to
+    /* 600: the second block overwrites history that its match still reads
+     *      (#4553 in v0.5, the same flaw in v0.4).
+     * 2048: the raw block fills the window, and the v0.5 streaming decoder used to
      *       keep no room for the next block (regression from the #4553 fix). */
     static const unsigned prefixSizes[] = { 600, 2048 };
     unsigned char frame[3000];
     unsigned char expected[3000];
+    unsigned version;
     size_t i;
-    for (i = 0; i < sizeof(prefixSizes) / sizeof(prefixSizes[0]); ++i) {
-        size_t expectedSize;
-        size_t const frameSize = buildV05WrapFrame(frame, expected, &expectedSize, prefixSizes[i]);
-        DISPLAY("v0.5 streaming wrap, %u-byte first block\n", prefixSizes[i]);
-        if (testSimpleAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
-        if (testStreamingAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+    for (version = (ZSTD_LEGACY_SUPPORT < 4) ? 4 : ZSTD_LEGACY_SUPPORT; version <= 5; ++version) {
+        for (i = 0; i < sizeof(prefixSizes) / sizeof(prefixSizes[0]); ++i) {
+            size_t expectedSize;
+            size_t const frameSize = buildWrapFrame(version, frame, expected, &expectedSize, prefixSizes[i]);
+            DISPLAY("v0.%u streaming wrap, %u-byte first block\n", version, prefixSizes[i]);
+            if (testSimpleAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+            if (testStreamingAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+        }
     }
     return 0;
 }
@@ -974,14 +923,7 @@ int main(void)
         if (testLegacyBlockBounds()) break;
         if (testLegacyRawLiteralOffsets()) break;
 #if (ZSTD_LEGACY_SUPPORT <= 5)
-        if (testV05StreamingWrap()) break;
-#endif
-#if (ZSTD_LEGACY_SUPPORT <= 4)
-        /* crafted frame : its first block is smaller than the declared window,
-         * so the v0.4 streaming decoder wraps its output buffer while later
-         * sequences still reference data from that block */
-        if (testStreamingMatchesOneShot(FRAME_V04_WRAP, FRAME_V04_WRAP_SIZE,
-                                        1148, "v0.4 sub-window wrap frame")) break;
+        if (testStreamingWrap()) break;
 #endif
         result = 0;
     } while (0);
@@ -1111,82 +1053,3 @@ const char* const BLOCK =
     "snowden is snowed in / he's now then in his snow den / when does the snow end?\n"
     "goodbye little dog / you dug some holes in your day / they'll be hard to fill.\n"
     "when life shuts a door, / just open it. it’s a door. / that is how doors work.\n";
-
-
-/* A crafted v0.4 frame (windowLog == 11, raw 600-byte first block, then a
- * compressed block whose sequence offset reaches into the first block).
- * It decodes to 1148 bytes; the streaming decoder must agree with the
- * one-shot decoder. */
-const char* const FRAME_V04_WRAP =
-    "\x24\xB5\x2F\xFD\x00\x40\x02\x58\x30\x31\x32\x33\x34\x35\x36\x37"
-    "\x38\x39\x3A\x3B\x3C\x3D\x3E\x3F\x40\x41\x42\x43\x44\x45\x46\x47"
-    "\x48\x49\x4A\x4B\x4C\x4D\x4E\x4F\x50\x51\x52\x53\x54\x55\x56\x57"
-    "\x58\x59\x5A\x5B\x5C\x5D\x5E\x5F\x60\x61\x62\x63\x64\x65\x66\x67"
-    "\x68\x69\x6A\x6B\x6C\x6D\x6E\x6F\x70\x71\x72\x73\x74\x75\x76\x77"
-    "\x78\x79\x7A\x7B\x7C\x7D\x7E\x7F\x80\x81\x82\x83\x84\x85\x86\x87"
-    "\x88\x89\x8A\x8B\x8C\x8D\x8E\x8F\x90\x91\x92\x93\x94\x95\x96\x97"
-    "\x98\x99\x9A\x9B\x9C\x9D\x9E\x9F\xA0\xA1\xA2\xA3\xA4\xA5\xA6\xA7"
-    "\xA8\xA9\xAA\xAB\xAC\xAD\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7"
-    "\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF\xC0\xC1\xC2\xC3\xC4\xC5\xC6\xC7"
-    "\xC8\xC9\xCA\xCB\xCC\xCD\xCE\xCF\xD0\xD1\xD2\xD3\xD4\xD5\xD6\xD7"
-    "\xD8\xD9\xDA\xDB\xDC\xDD\xDE\xDF\xE0\xE1\xE2\xE3\xE4\xE5\xE6\xE7"
-    "\xE8\xE9\xEA\xEB\xEC\xED\xEE\xEF\xF0\xF1\xF2\xF3\xF4\xF5\xF6\xF7"
-    "\xF8\xF9\xFA\xFB\xFC\xFD\xFE\xFF\x00\x01\x02\x03\x04\x05\x06\x07"
-    "\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10\x11\x12\x13\x14\x15\x16\x17"
-    "\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F\x20\x21\x22\x23\x24\x25\x26\x27"
-    "\x28\x29\x2A\x2B\x2C\x2D\x2E\x2F\x30\x31\x32\x33\x34\x35\x36\x37"
-    "\x38\x39\x3A\x3B\x3C\x3D\x3E\x3F\x40\x41\x42\x43\x44\x45\x46\x47"
-    "\x48\x49\x4A\x4B\x4C\x4D\x4E\x4F\x50\x51\x52\x53\x54\x55\x56\x57"
-    "\x58\x59\x5A\x5B\x5C\x5D\x5E\x5F\x60\x61\x62\x63\x64\x65\x66\x67"
-    "\x68\x69\x6A\x6B\x6C\x6D\x6E\x6F\x70\x71\x72\x73\x74\x75\x76\x77"
-    "\x78\x79\x7A\x7B\x7C\x7D\x7E\x7F\x80\x81\x82\x83\x84\x85\x86\x87"
-    "\x88\x89\x8A\x8B\x8C\x8D\x8E\x8F\x90\x91\x92\x93\x94\x95\x96\x97"
-    "\x98\x99\x9A\x9B\x9C\x9D\x9E\x9F\xA0\xA1\xA2\xA3\xA4\xA5\xA6\xA7"
-    "\xA8\xA9\xAA\xAB\xAC\xAD\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7"
-    "\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF\xC0\xC1\xC2\xC3\xC4\xC5\xC6\xC7"
-    "\xC8\xC9\xCA\xCB\xCC\xCD\xCE\xCF\xD0\xD1\xD2\xD3\xD4\xD5\xD6\xD7"
-    "\xD8\xD9\xDA\xDB\xDC\xDD\xDE\xDF\xE0\xE1\xE2\xE3\xE4\xE5\xE6\xE7"
-    "\xE8\xE9\xEA\xEB\xEC\xED\xEE\xEF\xF0\xF1\xF2\xF3\xF4\xF5\xF6\xF7"
-    "\xF8\xF9\xFA\xFB\xFC\xFD\xFE\xFF\x00\x01\x02\x03\x04\x05\x06\x07"
-    "\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10\x11\x12\x13\x14\x15\x16\x17"
-    "\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F\x20\x21\x22\x23\x24\x25\x26\x27"
-    "\x28\x29\x2A\x2B\x2C\x2D\x2E\x2F\x30\x31\x32\x33\x34\x35\x36\x37"
-    "\x38\x39\x3A\x3B\x3C\x3D\x3E\x3F\x40\x41\x42\x43\x44\x45\x46\x47"
-    "\x48\x49\x4A\x4B\x4C\x4D\x4E\x4F\x50\x51\x52\x53\x54\x55\x56\x57"
-    "\x58\x59\x5A\x5B\x5C\x5D\x5E\x5F\x60\x61\x62\x63\x64\x65\x66\x67"
-    "\x68\x69\x6A\x6B\x6C\x6D\x6E\x6F\x70\x71\x72\x73\x74\x75\x76\x77"
-    "\x78\x79\x7A\x7B\x7C\x7D\x7E\x7F\x80\x81\x82\x83\x84\x85\x86\x87"
-    "\x00\x02\x0B\xD1\x07\x00\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6A"
-    "\x6B\x6C\x6D\x6E\x6F\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7A"
-    "\x7B\x7C\x7D\x7E\x7F\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8A"
-    "\x8B\x8C\x8D\x8E\x8F\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9A"
-    "\x9B\x9C\x9D\x9E\x9F\xA0\xA1\xA2\xA3\xA4\xA5\xA6\xA7\xA8\xA9\xAA"
-    "\xAB\xAC\xAD\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA"
-    "\xBB\xBC\xBD\xBE\xBF\xC0\xC1\xC2\xC3\xC4\xC5\xC6\xC7\xC8\xC9\xCA"
-    "\xCB\xCC\xCD\xCE\xCF\xD0\xD1\xD2\xD3\xD4\xD5\xD6\xD7\xD8\xD9\xDA"
-    "\xDB\xDC\xDD\xDE\xDF\xE0\xE1\xE2\xE3\xE4\xE5\xE6\xE7\xE8\xE9\xEA"
-    "\xEB\xEC\xED\xEE\xEF\xF0\xF1\xF2\xF3\xF4\xF5\xF6\xF7\xF8\xF9\xFA"
-    "\xFB\xFC\xFD\xFE\xFF\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A"
-    "\x0B\x0C\x0D\x0E\x0F\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A"
-    "\x1B\x1C\x1D\x1E\x1F\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2A"
-    "\x2B\x2C\x2D\x2E\x2F\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3A"
-    "\x3B\x3C\x3D\x3E\x3F\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4A"
-    "\x4B\x4C\x4D\x4E\x4F\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5A"
-    "\x5B\x5C\x5D\x5E\x5F\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6A"
-    "\x6B\x6C\x6D\x6E\x6F\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7A"
-    "\x7B\x7C\x7D\x7E\x7F\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8A"
-    "\x8B\x8C\x8D\x8E\x8F\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9A"
-    "\x9B\x9C\x9D\x9E\x9F\xA0\xA1\xA2\xA3\xA4\xA5\xA6\xA7\xA8\xA9\xAA"
-    "\xAB\xAC\xAD\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA"
-    "\xBB\xBC\xBD\xBE\xBF\xC0\xC1\xC2\xC3\xC4\xC5\xC6\xC7\xC8\xC9\xCA"
-    "\xCB\xCC\xCD\xCE\xCF\xD0\xD1\xD2\xD3\xD4\xD5\xD6\xD7\xD8\xD9\xDA"
-    "\xDB\xDC\xDD\xDE\xDF\xE0\xE1\xE2\xE3\xE4\xE5\xE6\xE7\xE8\xE9\xEA"
-    "\xEB\xEC\xED\xEE\xEF\xF0\xF1\xF2\xF3\xF4\xF5\xF6\xF7\xF8\xF9\xFA"
-    "\xFB\xFC\xFD\xFE\xFF\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A"
-    "\x0B\x0C\x0D\x0E\x0F\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A"
-    "\x1B\x1C\x1D\x1E\x1F\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2A"
-    "\x2B\x2C\x2D\x2E\x2F\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3A"
-    "\x3B\x3C\x3D\x3E\x3F\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4A"
-    "\x4B\x4C\x4D\x4E\x4F\x50\x51\x52\x53\x54\x03\x00\x54\x04\xFF\xF4"
-    "\x01\x00\x00\x00\x00\x00\x12\x00\x40\x0F\x00\x92\xFA\x03\xC0\x00"
-    "\x00";
