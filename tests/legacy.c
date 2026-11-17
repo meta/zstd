@@ -790,27 +790,32 @@ static int testLegacyRawLiteralOffsets(void)
 }
 
 #if (ZSTD_LEGACY_SUPPORT <= 5)
-/* Build a v0.5 frame with windowLog 11 (2 KB), and its decoded content :
+/* Build a v0.4 or v0.5 frame with windowLog 11 (2 KB), and its decoded content :
  * a raw block of prefixSize bytes, then a compressed block whose only sequence
  * copies 4 bytes from offset 1000, inside the raw block, after 500 literals.
  * It ends with 16 literals: the one-shot decoder wants room after the last match.
  * The streaming decoder wraps its output buffer between the two blocks. */
-static size_t buildV05WrapFrame(unsigned char* dst, unsigned char* expected,
-                                size_t* expectedSize, unsigned prefixSize)
+static size_t buildWrapFrame(unsigned version, unsigned char* dst, unsigned char* expected,
+                             size_t* expectedSize, unsigned prefixSize)
 {
-    /* Sequence section: nbSeq 1, then RLE LL/offset/ML tables and 3 bytes of dumps.
-     * The dumps hold litLength 500: 255, then LE16 500<<1.
+    /* Sequence section: nbSeq 1 (LE16 in v0.4), then RLE LL/offset/ML tables
+     * (0xA8 in v0.4, 0x54 in v0.5) and the dumps.
+     * The dumps hold litLength 500: 255, then LE24 500 (v0.4) or LE16 500<<1 (v0.5).
      * Table symbols: LL 63 (read the dumps), offset code 10 (512 + 9 bits), ML 0 (MINMATCH).
      * Bitstream: the 9 offset bits (1000 - 512) under the stop bit. */
-    static const unsigned char sequences[] = { 1, 0x54, 3, 255, 0xE8, 0x03, 63, 10, 0, 0xE8, 0x03 };
+    static const unsigned char sequencesV04[] = { 1, 0, 0xA8, 4, 255, 0xF4, 0x01, 0, 63, 10, 0, 0xE8, 0x03 };
+    static const unsigned char sequencesV05[] = { 1, 0x54, 3, 255, 0xE8, 0x03, 63, 10, 0, 0xE8, 0x03 };
+    const unsigned char* const sequences = (version == 4) ? sequencesV04 : sequencesV05;
+    size_t const seqSize = (version == 4) ? sizeof(sequencesV04) : sizeof(sequencesV05);
     unsigned const litLength = 500;
     unsigned const litSize = litLength + 16;
-    size_t const blockSize = 2 + litSize + sizeof(sequences);
+    size_t const blockSize = ((version == 4) ? 3 : 2) + litSize + seqSize;
     unsigned char* op = expected + prefixSize;
     unsigned char* lits;
     size_t pos = 0;
     unsigned i;
-    dst[pos++] = 0x25; dst[pos++] = 0xB5; dst[pos++] = 0x2F; dst[pos++] = 0xFD;  /* v0.5 magic */
+    dst[pos++] = (unsigned char)(0x20 + version);  /* magic */
+    dst[pos++] = 0xB5; dst[pos++] = 0x2F; dst[pos++] = 0xFD;
     dst[pos++] = 0;  /* windowLog 11 */
     dst[pos++] = (unsigned char)(0x40 | (prefixSize >> 16));  /* raw block */
     dst[pos++] = (unsigned char)(prefixSize >> 8);
@@ -819,13 +824,19 @@ static size_t buildV05WrapFrame(unsigned char* dst, unsigned char* expected,
     dst[pos++] = (unsigned char)(blockSize >> 16);  /* compressed block */
     dst[pos++] = (unsigned char)(blockSize >> 8);
     dst[pos++] = (unsigned char)blockSize;
-    dst[pos++] = (unsigned char)(0xA0 | (litSize >> 8));  /* raw literals, 2-byte header */
-    dst[pos++] = (unsigned char)litSize;
+    if (version == 4) {  /* raw literals: LE24 (litSize << 2) | 1 */
+        dst[pos++] = (unsigned char)((litSize << 2) | 1);
+        dst[pos++] = (unsigned char)(litSize >> 6);
+        dst[pos++] = (unsigned char)(litSize >> 14);
+    } else {  /* raw literals, 2-byte header */
+        dst[pos++] = (unsigned char)(0xA0 | (litSize >> 8));
+        dst[pos++] = (unsigned char)litSize;
+    }
     lits = dst + pos;
     for (i = 0; i < litSize; i++) lits[i] = (unsigned char)(i * 7 + 3);  /* differ from the raw block */
     pos += litSize;
-    memcpy(dst + pos, sequences, sizeof(sequences));
-    pos += sizeof(sequences);
+    memcpy(dst + pos, sequences, seqSize);
+    pos += seqSize;
     dst[pos++] = 0xC0; dst[pos++] = 0; dst[pos++] = 0;  /* end of frame */
 
     memcpy(op, lits, litLength);
@@ -837,21 +848,25 @@ static size_t buildV05WrapFrame(unsigned char* dst, unsigned char* expected,
     return pos;
 }
 
-static int testV05StreamingWrap(void)
+static int testStreamingWrap(void)
 {
-    /* 600: the second block overwrites history that its match still reads (#4553).
-     * 2048: the raw block fills the window, and the streaming decoder used to
+    /* 600: the second block overwrites history that its match still reads
+     *      (#4553 in v0.5, the same flaw in v0.4).
+     * 2048: the raw block fills the window, and the v0.5 streaming decoder used to
      *       keep no room for the next block (regression from the #4553 fix). */
     static const unsigned prefixSizes[] = { 600, 2048 };
     unsigned char frame[3000];
     unsigned char expected[3000];
+    unsigned version;
     size_t i;
-    for (i = 0; i < sizeof(prefixSizes) / sizeof(prefixSizes[0]); ++i) {
-        size_t expectedSize;
-        size_t const frameSize = buildV05WrapFrame(frame, expected, &expectedSize, prefixSizes[i]);
-        DISPLAY("v0.5 streaming wrap, %u-byte first block\n", prefixSizes[i]);
-        if (testSimpleAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
-        if (testStreamingAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+    for (version = (ZSTD_LEGACY_SUPPORT < 4) ? 4 : ZSTD_LEGACY_SUPPORT; version <= 5; ++version) {
+        for (i = 0; i < sizeof(prefixSizes) / sizeof(prefixSizes[0]); ++i) {
+            size_t expectedSize;
+            size_t const frameSize = buildWrapFrame(version, frame, expected, &expectedSize, prefixSizes[i]);
+            DISPLAY("v0.%u streaming wrap, %u-byte first block\n", version, prefixSizes[i]);
+            if (testSimpleAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+            if (testStreamingAPI((const char*)frame, frameSize, (const char*)expected, expectedSize)) return 1;
+        }
     }
     return 0;
 }
@@ -908,7 +923,7 @@ int main(void)
         if (testLegacyBlockBounds()) break;
         if (testLegacyRawLiteralOffsets()) break;
 #if (ZSTD_LEGACY_SUPPORT <= 5)
-        if (testV05StreamingWrap()) break;
+        if (testStreamingWrap()) break;
 #endif
         result = 0;
     } while (0);
