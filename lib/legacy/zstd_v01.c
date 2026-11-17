@@ -1734,13 +1734,6 @@ static size_t ZSTD_execSequence(BYTE* op,
     if (seqLength > (size_t)(oend - op)) return ERROR(dstSize_tooSmall);
     if (sequence.litLength > (size_t)(litLimit - *litPtr)) return ERROR(corruption_detected);
     /* Now we know there are no overflow in literal nor match lengths, can use pointer checks */
-    /* Use full-precision size_t arithmetic; the previous `(U32)` cast on the
-     * `ptrdiff_t` truncated silently when `oLitEnd - base` exceeded
-     * `UINT32_MAX`, letting larger `sequence.offset` values bypass the
-     * check on 64-bit builds with multi-GiB destination buffers.  Reject
-     * the pathological `oLitEnd < base` case before the unsigned cast so
-     * a negative difference cannot wrap to a huge positive bound. */
-    if (oLitEnd < base) return ERROR(corruption_detected);
     if (sequence.offset > (size_t)(oLitEnd - base)) return ERROR(corruption_detected);
 
     if (endMatch > oend) return ERROR(dstSize_tooSmall);   /* overwrite beyond dst buffer */
@@ -1763,21 +1756,9 @@ static size_t ZSTD_execSequence(BYTE* op,
         size_t qutt = 12;
         U64 saved[2];
 
-        /* The earlier `sequence.offset > (size_t)(oLitEnd - base)` check
-         * (with `op == oLitEnd` at this point, since `op += litLength`
-         * already ran) guarantees that `op - sequence.offset >= base`,
-         * so the `match = op - sequence.offset` pointer formed above is
-         * always within the destination object and does not invoke C's
-         * out-of-bounds pointer-arithmetic UB.  The `if (match < base)`
-         * post-check is kept as defense-in-depth.
-         *
-         * The previous `sequence.offset > (size_t)base` check compared
-         * the offset against the numeric address of the `base` pointer,
-         * which is meaningless: on 64-bit systems `base` is a high
-         * virtual address that no 32-bit offset can exceed; on 32-bit
-         * systems the check fires only on accidental low-address
-         * allocations rather than on any underflow condition. */
+        /* check */
         if (match < base) return ERROR(corruption_detected);
+        if (sequence.offset > (size_t)base) return ERROR(corruption_detected);
 
         /* save beginning of literal sequence, in case of write overlap */
         if (overlapRisk)
