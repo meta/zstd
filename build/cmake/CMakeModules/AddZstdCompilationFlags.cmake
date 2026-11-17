@@ -109,6 +109,25 @@ macro(ADD_ZSTD_COMPILATION_FLAGS _C _CXX _LD)
                 endif()
             endif()
         endif()
+        # Check whether the assembler supports APX, which builds the APX
+        # version of the x86-64 assembly (selected at runtime). Defined for
+        # all sources: the C dispatch and the assembly must agree.
+        if (CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|AMD64.*|x86_64.*|X86_64.*" AND NOT MSVC)
+            include(CheckCSourceCompiles)
+            check_c_source_compiles("
+                __asm__(\".text; shrq $53, %rbp, %r16; btsq %r20, %rbp; push2p %r12, %rbx; pushp %r15\");
+                int main(void) { return 0; }" ZSTD_ASM_APX_SUPPORTED)
+            if (ZSTD_ASM_APX_SUPPORTED)
+                add_definitions(-DZSTD_ASM_APX_SUPPORTED=1)
+                # The APX conditional compare (CCMP) needs a newer assembler
+                check_c_source_compiles("
+                    __asm__(\".text; cmpq %rdi, %r15; ccmpne {dfv=cf} %r8, %r9\");
+                    int main(void) { return 0; }" ZSTD_ASM_APX_CCMP_SUPPORTED)
+                if (ZSTD_ASM_APX_CCMP_SUPPORTED)
+                    add_definitions(-DZSTD_ASM_APX_CCMP_SUPPORTED=1)
+                endif ()
+            endif ()
+        endif ()
     elseif (MSVC) # Add specific compilation flags for Windows Visual
 
         set(ACTIVATE_MULTITHREADED_COMPILATION "ON" CACHE BOOL "activate multi-threaded compilation (/MP flag)")

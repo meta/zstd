@@ -159,6 +159,15 @@ else
   # Unconditionally add the ASM files they are disabled by
   # macros in the .S file.
   ZSTD_DECOMPRESS_FILES += $(ZSTD_DECOMPRESS_AMD64_ASM_FILES)
+  # Build the APX version of the x86-64 assembly (selected at runtime)
+  # when the assembler supports APX (NDD, EGPR, PUSH2/POP2 and PPX).
+  ifeq ($(shell printf '.text\n shrq $$53, %%rbp, %%r16\n btsq %%r20, %%rbp\n push2p %%r12, %%rbx\n pushp %%r15\n' | $(CC) $(FLAGS) -x assembler -c - -o $(VOID) 2>$(VOID) && echo 1 || echo 0),1)
+    CPPFLAGS += -DZSTD_ASM_APX_SUPPORTED=1
+    # The APX conditional compare (CCMP) needs a newer assembler
+    ifeq ($(shell printf '.text\n cmpq %%rdi, %%r15\n ccmpne {dfv=cf} %%r8, %%r9\n' | $(CC) $(FLAGS) -x assembler -c - -o $(VOID) 2>$(VOID) && echo 1 || echo 0),1)
+      CPPFLAGS += -DZSTD_ASM_APX_CCMP_SUPPORTED=1
+    endif
+  endif
 endif
 
 ifneq ($(HUF_FORCE_DECOMPRESS_X1), 0)

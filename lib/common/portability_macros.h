@@ -189,6 +189,31 @@
 # define ZSTD_ENABLE_ASM_X86_64_BMI2 0
 #endif
 
+/**
+ * Determines whether we should enable the APX version of the x86-64
+ * assembly. It is used instead of the BMI2 version when APX is available.
+ *
+ * Enable if all of the following conditions hold:
+ * - The x86-64 BMI2 assembly is enabled
+ * - It hasn't been explicitly disabled by defining ZSTD_DISABLE_ASM_APX
+ * - We aren't using the kernel CPU features (ZSTD_USE_KERNEL_CPU_FEATURES),
+ *   kernel code can't use the APX registers
+ * - Either we are compiling for APX (STATIC_APXF), in which case the APX
+ *   version is always used, or APX is detected at runtime (DYNAMIC_APXF) and
+ *   the build system detected that the assembler supports APX and defined
+ *   ZSTD_ASM_APX_SUPPORTED=1. The compiler version alone doesn't tell whether
+ *   the assembler (e.g. GNU as, used by GCC) supports APX.
+ */
+#if ZSTD_ENABLE_ASM_X86_64_BMI2 &&                                \
+    !defined(ZSTD_DISABLE_ASM_APX) &&                             \
+    !defined(ZSTD_USE_KERNEL_CPU_FEATURES) &&                     \
+    (STATIC_APXF ||                                               \
+     (DYNAMIC_APXF && defined(ZSTD_ASM_APX_SUPPORTED) && ZSTD_ASM_APX_SUPPORTED))
+# define ZSTD_ENABLE_ASM_X86_64_APX 1
+#else
+# define ZSTD_ENABLE_ASM_X86_64_APX 0
+#endif
+
 /*
  * For x86 ELF targets, add .note.gnu.property section for Intel CET in
  * assembly sources when CET is enabled.
