@@ -168,8 +168,8 @@ branch of zstd. You can then find the status of the tests on the PR's page. You 
 re-run tests and cancel running tests from the PR page or from the respective CI's dashboard.
 
 Almost all of zstd's CI runs on GitHub Actions (configured at `.github/workflows`), which will automatically run on PRs to your
-own fork. A small number of tests run on other services (e.g. Travis CI, Circle CI, Appveyor).
-These require work to set up on your local fork, and (at least for Travis CI) cost money.
+own fork. A small number of tests run on another service (Cirrus CI, for FreeBSD).
+It requires work to set up on your local fork.
 Therefore, if the PR on your local fork passes GitHub Actions, feel free to submit a PR
 against the main repo.
 
@@ -181,10 +181,7 @@ who want earlier signal.
 
 | Service   | Purpose                                                                                                    | Setup Links                                                                                                                                            | Config Path            |
 |-----------|------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------|
-| Travis CI | Used for testing on non-x86 architectures such as PowerPC                                                  | https://docs.travis-ci.com/user/tutorial/#to-get-started-with-travis-ci-using-github <br> https://github.com/marketplace/travis-ci                     | `.travis.yml`          |
-| AppVeyor  | Used for some Windows testing (e.g. cygwin, mingw)                                                         | https://www.appveyor.com/blog/2018/10/02/github-apps-integration/ <br> https://github.com/marketplace/appveyor                                         | `appveyor.yml`         |
 | Cirrus CI | Used for testing on FreeBSD                                                                                | https://github.com/marketplace/cirrus-ci/                                                                                                              | `.cirrus.yml`          |
-| Circle CI | Historically was used to provide faster signal,<br/> but we may be able to migrate these to Github Actions | https://circleci.com/docs/2.0/getting-started/#setting-up-circleci <br> https://youtu.be/Js3hMUsSZ2c <br> https://circleci.com/docs/2.0/enable-checks/ | `.circleci/config.yml` |
 
 Note: the instructions linked above mostly cover how to set up a repository with CI from scratch.
 The general idea should be the same for setting up CI on your fork of zstd, but you may have to

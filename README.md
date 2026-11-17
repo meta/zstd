@@ -12,15 +12,9 @@ a list of known ports and bindings is provided on [Zstandard homepage](https://f
 
 **Development branch status:**
 
-[![Build Status][travisDevBadge]][travisLink]
-[![Build status][CircleDevBadge]][CircleLink]
 [![Build status][CirrusDevBadge]][CirrusLink]
 [![Fuzzing Status][OSSFuzzBadge]][OSSFuzzLink]
 
-[travisDevBadge]: https://api.travis-ci.com/facebook/zstd.svg?branch=dev "Continuous Integration test suite"
-[travisLink]: https://travis-ci.com/facebook/zstd
-[CircleDevBadge]: https://circleci.com/gh/facebook/zstd/tree/dev.svg?style=shield "Short test suite"
-[CircleLink]: https://circleci.com/gh/facebook/zstd
 [CirrusDevBadge]: https://api.cirrus-ci.com/github/facebook/zstd.svg?branch=dev
 [CirrusLink]: https://cirrus-ci.com/github/facebook/zstd
 [OSSFuzzBadge]: https://oss-fuzz-build-logs.storage.googleapis.com/badges/zstd.svg
@@ -174,7 +168,8 @@ sudo ninja install
 A Meson project is provided within [`build/meson`](build/meson). Follow
 build instructions in that directory.
 
-You can also take a look at [`.travis.yml`](.travis.yml) file for an
+You can also take a look at the `meson-linux` job in
+[`.github/workflows/dev-short-tests.yml`](.github/workflows/dev-short-tests.yml) for an
 example about how Meson is used to build this project.
 
 Note that default build type is **release**.
