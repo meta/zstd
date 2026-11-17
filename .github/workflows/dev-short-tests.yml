@@ -543,18 +543,23 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # tag=v3.0.0
-    - name: Build and run tests
+    - name: Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      env:
-        ZSTD_BIN: ./zstd.exe
-        DATAGEN_BIN: ./datagen.exe
       # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
       run: |
         msbuild "build\VS2010\zstd.sln" /m /verbosity:minimal /property:PlatformToolset=v142 /t:Clean,Build /p:Platform=${{matrix.platform}} /p:Configuration=${{matrix.configuration}}
         COPY build\VS2010\bin\${{matrix.platform}}_${{matrix.configuration}}\*.exe tests\
-        CD tests
+    - name: Run tests
+      # bash stops at the first failing command. pwsh, the default shell, doesn't,
+      # and the step only reported the exit code of its last command.
+      shell: bash
+      working-directory: tests
+      env:
+        ZSTD_BIN: ./zstd.exe
+        DATAGEN_BIN: ./datagen.exe
+      run: |
         sh -e playTests.sh
-        .\fuzzer.exe -T2m
+        ./fuzzer.exe -T2m
 
   # Following instructions at: https://github.com/marketplace/actions/install-cygwin-action
   cygwin-tests:
