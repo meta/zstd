@@ -32,6 +32,27 @@ jobs:
     - name: Configure (Root)
       run: |
         cmake -S . -B cmake-build -DCMAKE_BUILD_TYPE=Release ${{ env.COMMON_CMAKE_FLAGS }}
+    - name: Check subproject target collisions
+      run: |
+        # Create a temporary parent project.
+        zstd_ci_dir=$(mktemp -d "$RUNNER_TEMP/zstd-subproject.XXXXXX")
+        # Clean up when the step ends, even if it fails.
+        trap 'rm -rf -- "$zstd_ci_dir"' EXIT
+
+        cat > "$zstd_ci_dir/CMakeLists.txt" <<'EOF'
+        cmake_minimum_required(VERSION 3.10)
+        project(zstd_parent C)
+
+        # Include Zstd as a subproject, then check for target name collisions.
+        add_subdirectory("${ZSTD_PROJECT_DIR}" zstd)
+
+        add_custom_target(clean-all)
+        add_custom_target(uninstall)
+        EOF
+
+        cmake -S "$zstd_ci_dir" -B "$zstd_ci_dir/build" \
+          -DZSTD_PROJECT_DIR="$GITHUB_WORKSPACE/build/cmake" \
+          -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF
     - name: Build (Root)
       run: |
         cmake --build cmake-build --config Release
