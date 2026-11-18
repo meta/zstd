@@ -5417,6 +5417,17 @@ size_t ZSTD_compressEnd_public(ZSTD_CCtx* cctx,
     return cSize + endResult;
 }
 
+static size_t ZSTD_compressEnd_andReset(ZSTD_CCtx* cctx,
+                                        void* dst, size_t dstCapacity,
+                                  const void* src, size_t srcSize)
+{
+    size_t const result = ZSTD_compressEnd_public(cctx, dst, dstCapacity, src, srcSize);
+    if (!ZSTD_isError(result)) {
+        ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+    }
+    return result;
+}
+
 /* NOTE: Must just wrap ZSTD_compressEnd_public() */
 size_t ZSTD_compressEnd(ZSTD_CCtx* cctx,
                         void* dst, size_t dstCapacity,
@@ -5453,7 +5464,7 @@ size_t ZSTD_compress_advanced_internal(
     FORWARD_IF_ERROR( ZSTD_compressBegin_internal(cctx,
                          dict, dictSize, ZSTD_dct_auto, ZSTD_dtlm_fast, NULL,
                          params, srcSize, ZSTDb_not_buffered) , "");
-    return ZSTD_compressEnd_public(cctx, dst, dstCapacity, src, srcSize);
+    return ZSTD_compressEnd_andReset(cctx, dst, dstCapacity, src, srcSize);
 }
 
 size_t ZSTD_compress_usingDict(ZSTD_CCtx* cctx,
@@ -5917,7 +5928,7 @@ static size_t ZSTD_compress_usingCDict_internal(ZSTD_CCtx* cctx,
                                 const ZSTD_CDict* cdict, ZSTD_frameParameters fParams)
 {
     FORWARD_IF_ERROR(ZSTD_compressBegin_usingCDict_internal(cctx, cdict, fParams, srcSize), ""); /* will check if cdict != NULL */
-    return ZSTD_compressEnd_public(cctx, dst, dstCapacity, src, srcSize);
+    return ZSTD_compressEnd_andReset(cctx, dst, dstCapacity, src, srcSize);
 }
 
 /*! ZSTD_compress_usingCDict_advanced():
