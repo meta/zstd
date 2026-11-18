@@ -16,7 +16,7 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 
 # Define project paths
-set(ZSTD_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+get_filename_component(ZSTD_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(LIBRARY_DIR ${ZSTD_SOURCE_DIR}/lib)
 
 #-----------------------------------------------------------------------------
@@ -33,6 +33,16 @@ project(zstd
     HOMEPAGE_URL "${zstd_HOMEPAGE_URL}"
     DESCRIPTION "${zstd_DESCRIPTION}"
 )
+
+# Parent projects can set ZSTD_IS_SUBPROJECT before add_subdirectory().
+# Recognize standalone builds from both the repository root and build/cmake.
+if(NOT DEFINED ZSTD_IS_SUBPROJECT)
+    if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR OR CMAKE_SOURCE_DIR STREQUAL ZSTD_SOURCE_DIR)
+        set(ZSTD_IS_SUBPROJECT FALSE)
+    else()
+        set(ZSTD_IS_SUBPROJECT TRUE)
+    endif()
+endif()
 
 #-----------------------------------------------------------------------------
 # Build type configuration
