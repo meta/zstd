@@ -2306,6 +2306,104 @@ static void FUZ_mdict_checkOutput(size_t r, const void* out, const char* expecte
     CHECK_EQ(memcmp(out, expected, r), 0);
 }
 
+/* Layout of FUZ_mdict_makeDict(): 28-byte header, then 16 bytes of content. */
+#define FUZ_DH_HEADER   28
+#define FUZ_DH_CONTENT  16
+#define FUZ_DH_DICT     (FUZ_DH_HEADER + FUZ_DH_CONTENT)
+
+/* A frame whose only sequence is a four-byte match at `offset`. */
+static size_t FUZ_ddictHeader_makeFrame(BYTE* frame, U32 dictID, unsigned offset)
+{
+    BYTE* op = frame + 17;
+    unsigned const ofCode = ZSTD_highbit32(offset + ZSTD_REP_NUM);
+    MEM_writeLE32(frame, ZSTD_MAGICNUMBER);
+    frame[4] = 0x83; frame[5] = 0x38;  /* 4-byte dictID and size, 128 KiB window */
+    MEM_writeLE32(frame + 6, dictID);
+    MEM_writeLE32(frame + 10, 4);
+    *op++ = 0;  /* no literals */
+    *op++ = 1; *op++ = 0x54;  /* one sequence, three RLE tables */
+    *op++ = 0; *op++ = (BYTE)ofCode; *op++ = 1;  /* LL=0, ML=4 */
+    *op++ = (BYTE)((1U << ofCode) | (offset + 3 - (1U << ofCode)));
+    MEM_writeLE24(frame + 14, (U32)((op - (frame + 17)) << 3) | (bt_compressed << 1) | 1);
+    return (size_t)(op - frame);
+}
+
+/* Matches into the header must be rejected; all others must decode. */
+static void FUZ_ddictHeader_check(size_t r, const BYTE* out, const BYTE* dict,
+                                  unsigned offset, int raw)
+{
+    if (!raw && offset > FUZ_DH_CONTENT) {
+        CHECK_EQ(ZSTD_getErrorCode(r), ZSTD_error_corruption_detected);
+    } else {
+        CHECK_EQ(r, 4);
+        CHECK_EQ(memcmp(out, dict + FUZ_DH_DICT - offset, 4), 0);
+    }
+}
+
+static void FUZ_ddictHeader_testOffset(ZSTD_DCtx* dctx, const ZSTD_DDict* ddict,
+        const BYTE* dict, unsigned offset, int raw)
+{
+    ZSTD_dictContentType_e const type = raw ? ZSTD_dct_rawContent : ZSTD_dct_fullDict;
+    BYTE frame[32], out[4];
+    size_t const size = FUZ_ddictHeader_makeFrame(frame, ZSTD_getDictID_fromDDict(ddict), offset);
+    int mode;
+
+    /* Every way of installing a dictionary reaches the same decoder state. */
+    for (mode = 0; mode < (raw ? 5 : 6); ++mode) {
+        size_t r;
+        CHECK_Z(ZSTD_DCtx_reset(dctx, ZSTD_reset_session_and_parameters));
+        switch (mode) {
+        case 0: r = ZSTD_decompress_usingDDict(dctx, out, sizeof(out), frame, size, ddict); break;
+        case 1: case 2:
+            CHECK_Z(ZSTD_DCtx_refDDict(dctx, ddict));
+            r = FUZ_mdict_decompressStream(dctx, out, sizeof(out), frame, size, mode == 1 ? 1 : size);
+            break;
+        case 3:
+            CHECK_Z(ZSTD_DCtx_loadDictionary_advanced(dctx, dict, FUZ_DH_DICT, ZSTD_dlm_byCopy, type));
+            r = ZSTD_decompressDCtx(dctx, out, sizeof(out), frame, size);
+            break;
+        case 4:
+            CHECK_Z(ZSTD_DCtx_refPrefix_advanced(dctx, dict, FUZ_DH_DICT, type));
+            r = ZSTD_decompressDCtx(dctx, out, sizeof(out), frame, size);
+            break;
+        default: /* Control: the non-DDict API, which already rejected these. */
+            r = ZSTD_decompress_usingDict(dctx, out, sizeof(out), frame, size, dict, FUZ_DH_DICT);
+            break;
+        }
+        FUZ_ddictHeader_check(r, out, dict, offset, raw);
+    }
+}
+
+static void test_decompressDDictHeader(unsigned tnb)
+{
+    /* The last valid offset, the first header byte, and the dictionary magic. */
+    static const unsigned offsets[] = { FUZ_DH_CONTENT, FUZ_DH_CONTENT + 1, FUZ_DH_DICT };
+    BYTE dict[FUZ_DH_DICT];
+    ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+    ZSTD_DDict* ddicts[2];
+    int raw;
+    size_t i;
+    DISPLAYLEVEL(3, "test%3u : formatted dictionary headers are not match history : ", tnb);
+    FUZ_mdict_makeDict(dict, 1, 0);
+    for (i = 0; i < FUZ_DH_CONTENT; ++i) dict[FUZ_DH_HEADER + i] = (BYTE)(0x80 + i);
+    ddicts[0] = ZSTD_createDDict(dict, sizeof(dict));
+    ddicts[1] = ZSTD_createDDict_advanced(dict, sizeof(dict),
+                ZSTD_dlm_byCopy, ZSTD_dct_rawContent, ZSTD_defaultCMem);
+    CHECK(dctx != NULL && ddicts[0] != NULL && ddicts[1] != NULL);
+
+    for (raw = 0; raw < 2; ++raw) {
+        /* Legacy decoders need the complete dictionary, header included. */
+        CHECK_EQ(ZSTD_DDict_dictSize(ddicts[raw]), sizeof(dict));
+        CHECK_EQ(memcmp(ZSTD_DDict_dictContent(ddicts[raw]), dict, sizeof(dict)), 0);
+        for (i = 0; i < COUNTOF(offsets); ++i)
+            FUZ_ddictHeader_testOffset(dctx, ddicts[raw], dict, offsets[i], raw);
+    }
+    ZSTD_freeDDict(ddicts[0]);
+    ZSTD_freeDDict(ddicts[1]);
+    ZSTD_freeDCtx(dctx);
+    DISPLAYLEVEL(3, "OK \n");
+}
+
 static void FUZ_mdict_testOneShot(void)
 {
     ZSTD_DDict* const a = FUZ_mdict_createDict(1111, 'A');
@@ -3456,6 +3554,8 @@ static int basicUnitTests(U32 const seed, double compressibility)
     test_decompressBoundOverflow(testNb++);
 
     test_decompressHuffmanTable(testNb++);
+
+    test_decompressDDictHeader(testNb++);
 
     test_decoderPointerBoundaries(testNb++);
 
