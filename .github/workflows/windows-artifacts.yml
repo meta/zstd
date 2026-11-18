@@ -85,6 +85,10 @@ jobs:
           ./lib/dll/example/build_package.bat || exit 1
           mv bin/ zstd-${{ github.ref_name }}-${{matrix.ziparch}}/
 
+      - name: Check packaged DLL import library (MSYS2)
+        if: matrix.shell == 'msys2'
+        run: test -f zstd-${{ github.ref_name }}-${{ matrix.ziparch }}/dll/libzstd.lib
+
       - name: Create artifacts (CMake)
         if: matrix.shell == 'cmake'
         run: |
