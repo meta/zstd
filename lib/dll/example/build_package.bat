@@ -38,6 +38,7 @@ if "%BUILD_TYPE%"=="cmake" (
     echo Copying Make build artifacts...
     call :copyFile "lib\libzstd.a" "bin\static\libzstd_static.lib"
     call :copyFile "lib\dll\libzstd.*" "bin\dll\"
+    call :copyFile "lib\dll\libzstd.dll.a" "bin\dll\libzstd.lib"
     call :copyFile "programs\zstd.exe" "bin\zstd.exe"
     call :copyFile "lib\dll\example\README.md" "bin\"
 )
