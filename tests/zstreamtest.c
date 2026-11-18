@@ -2709,6 +2709,39 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
     DISPLAYLEVEL(3, "OK \n");
 
 
+    DISPLAYLEVEL(3, "test%3i : Sequence length overflow: ", testNb++);
+    {
+        ZSTD_Sequence const sequences[] = {
+            { 1, 0x80000000U, 0x80000008U, 0 },
+            { 0, 0, 0, 0 }
+        };
+        ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+        size_t const srcSize = 16;
+        int validate;
+        int delimiters;
+        CHECK(cctx == NULL, "Allocation failed");
+        for (validate = 0; validate <= 1; ++validate) {
+            for (delimiters = 0; delimiters <= 1; ++delimiters) {
+                CHECK_Z(ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters));
+                CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_validateSequences, validate));
+                CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, delimiters));
+                cSize = ZSTD_compressSequences(cctx, compressedBuffer, compressedBufferSize,
+                                               sequences, delimiters ? 2 : 1, CNBuffer, srcSize);
+                if (delimiters) {
+                    CHECK(ZSTD_getErrorCode(cSize) != ZSTD_error_externalSequences_invalid,
+                          "Wrong error code: %s", ZSTD_getErrorName(cSize));
+                } else {
+                    CHECK_Z(cSize);
+                    CHECK(ZSTD_decompress(decodedBuffer, srcSize, compressedBuffer, cSize) != srcSize,
+                          "Wrong decompressed size");
+                    CHECK(memcmp(CNBuffer, decodedBuffer, srcSize) != 0, "Corruption!");
+                }
+            }
+        }
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : Testing large offset with small window size: ", testNb++);
     {
         ZSTD_CCtx* cctx = ZSTD_createCCtx();

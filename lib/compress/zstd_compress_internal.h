@@ -1541,7 +1541,7 @@ void ZSTD_reset_compressedBlockState(ZSTD_compressedBlockState_t* bs);
 
 typedef struct {
     U32 idx;            /* Index in array of ZSTD_Sequence */
-    U32 posInSequence;  /* Position within sequence at idx */
+    U64 posInSequence;  /* Position within sequence at idx. The sum of its lengths may exceed U32. */
     size_t posInSrc;    /* Number of bytes given by sequences provided so far */
 } ZSTD_SequencePosition;
 

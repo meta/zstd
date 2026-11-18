@@ -6784,8 +6784,8 @@ ZSTD_transferSequences_noDelim(ZSTD_CCtx* cctx,
                                ZSTD_ParamSwitch_e externalRepSearch)
 {
     U32 idx = seqPos->idx;
-    U32 startPosInSequence = seqPos->posInSequence;
-    U32 endPosInSequence = seqPos->posInSequence + (U32)blockSize;
+    U64 startPosInSequence = seqPos->posInSequence;
+    U64 endPosInSequence = seqPos->posInSequence + blockSize;
     size_t dictSize;
     const BYTE* const istart = (const BYTE*)(src);
     const BYTE* ip = istart;
@@ -6804,40 +6804,41 @@ ZSTD_transferSequences_noDelim(ZSTD_CCtx* cctx,
     } else {
         dictSize = 0;
     }
-    DEBUGLOG(5, "ZSTD_transferSequences_noDelim: idx: %u PIS: %u blockSize: %zu", idx, startPosInSequence, blockSize);
+    DEBUGLOG(5, "ZSTD_transferSequences_noDelim: idx: %u PIS: %llu blockSize: %zu", idx, (unsigned long long)startPosInSequence, blockSize);
     DEBUGLOG(5, "Start seq: idx: %u (of: %u ml: %u ll: %u)", idx, inSeqs[idx].offset, inSeqs[idx].matchLength, inSeqs[idx].litLength);
     ZSTD_memcpy(updatedRepcodes.rep, cctx->blockState.prevCBlock->rep, sizeof(Repcodes_t));
     while (endPosInSequence && idx < inSeqsSize && !finalMatchSplit) {
         const ZSTD_Sequence currSeq = inSeqs[idx];
         U32 litLength = currSeq.litLength;
         U32 matchLength = currSeq.matchLength;
+        U64 const sequenceLength = (U64)litLength + matchLength;
         U32 const rawOffset = currSeq.offset;
         U32 offBase;
 
         /* Modify the sequence depending on where endPosInSequence lies */
-        if (endPosInSequence >= currSeq.litLength + currSeq.matchLength) {
+        if (endPosInSequence >= sequenceLength) {
             if (startPosInSequence >= litLength) {
                 startPosInSequence -= litLength;
                 litLength = 0;
-                matchLength -= startPosInSequence;
+                matchLength -= (U32)startPosInSequence;
             } else {
-                litLength -= startPosInSequence;
+                litLength -= (U32)startPosInSequence;
             }
             /* Move to the next sequence */
-            endPosInSequence -= currSeq.litLength + currSeq.matchLength;
+            endPosInSequence -= sequenceLength;
             startPosInSequence = 0;
         } else {
             /* This is the final (partial) sequence we're adding from inSeqs, and endPosInSequence
                does not reach the end of the match. So, we have to split the sequence */
-            DEBUGLOG(6, "Require a split: diff: %u, idx: %u PIS: %u",
-                     currSeq.litLength + currSeq.matchLength - endPosInSequence, idx, endPosInSequence);
+            DEBUGLOG(6, "Require a split: diff: %llu, idx: %u PIS: %llu",
+                     (unsigned long long)(sequenceLength - endPosInSequence), idx, (unsigned long long)endPosInSequence);
             if (endPosInSequence > litLength) {
                 U32 firstHalfMatchLength;
-                litLength = startPosInSequence >= litLength ? 0 : litLength - startPosInSequence;
-                firstHalfMatchLength = endPosInSequence - startPosInSequence - litLength;
+                litLength = startPosInSequence >= litLength ? 0 : litLength - (U32)startPosInSequence;
+                firstHalfMatchLength = (U32)(endPosInSequence - startPosInSequence) - litLength;
                 if (matchLength > blockSize && firstHalfMatchLength >= cctx->appliedParams.cParams.minMatch) {
                     /* Only ever split the match if it is larger than the block size */
-                    U32 secondHalfMatchLength = currSeq.matchLength + currSeq.litLength - endPosInSequence;
+                    U32 secondHalfMatchLength = (U32)(sequenceLength - endPosInSequence);
                     if (secondHalfMatchLength < cctx->appliedParams.cParams.minMatch) {
                         /* Move the endPosInSequence backward so that it creates match of minMatch length */
                         endPosInSequence -= cctx->appliedParams.cParams.minMatch - secondHalfMatchLength;
@@ -6854,7 +6855,7 @@ ZSTD_transferSequences_noDelim(ZSTD_CCtx* cctx,
                      * should go. We prefer to do this whenever it is not necessary to split the match, or if doing so
                      * would cause the first half of the match to be too small
                      */
-                    bytesAdjustment = endPosInSequence - currSeq.litLength;
+                    bytesAdjustment = (U32)(endPosInSequence - currSeq.litLength);
                     endPosInSequence = currSeq.litLength;
                     break;
                 }
@@ -6863,6 +6864,8 @@ ZSTD_transferSequences_noDelim(ZSTD_CCtx* cctx,
                 break;
             }
         }
+        /* The sequence now fits in this block, so its lengths can be added in U32. */
+        assert((U64)litLength + matchLength <= blockSize);
         /* Check if this offset can be represented with a repcode */
         {   U32 const ll0 = (litLength == 0);
             offBase = ZSTD_finalizeOffBase(rawOffset, updatedRepcodes.rep, ll0);
@@ -6884,7 +6887,7 @@ ZSTD_transferSequences_noDelim(ZSTD_CCtx* cctx,
             idx++; /* Next Sequence */
     }
     DEBUGLOG(5, "Ending seq: idx: %u (of: %u ml: %u ll: %u)", idx, inSeqs[idx].offset, inSeqs[idx].matchLength, inSeqs[idx].litLength);
-    assert(idx == inSeqsSize || endPosInSequence <= inSeqs[idx].litLength + inSeqs[idx].matchLength);
+    assert(idx == inSeqsSize || endPosInSequence <= (U64)inSeqs[idx].litLength + inSeqs[idx].matchLength);
     seqPos->idx = idx;
     seqPos->posInSequence = endPosInSequence;
     ZSTD_memcpy(cctx->blockState.nextCBlock->rep, updatedRepcodes.rep, sizeof(Repcodes_t));
@@ -6931,13 +6934,15 @@ static size_t
 blockSize_explicitDelimiter(const ZSTD_Sequence* inSeqs, size_t inSeqsSize, ZSTD_SequencePosition seqPos)
 {
     int end = 0;
-    size_t blockSize = 0;
+    U64 blockSize = 0;
     size_t spos = seqPos.idx;
     DEBUGLOG(6, "blockSize_explicitDelimiter : seq %zu / %zu", spos, inSeqsSize);
     assert(spos <= inSeqsSize);
     while (spos < inSeqsSize) {
         end = (inSeqs[spos].offset == 0);
-        blockSize += inSeqs[spos].litLength + inSeqs[spos].matchLength;
+        blockSize += (U64)inSeqs[spos].litLength + inSeqs[spos].matchLength;
+        RETURN_ERROR_IF(blockSize > ZSTD_BLOCKSIZE_MAX, externalSequences_invalid,
+                        "sequences incorrectly define a too large block");
         if (end) {
             if (inSeqs[spos].matchLength != 0)
                 RETURN_ERROR(externalSequences_invalid, "delimiter format error : both matchlength and offset must be == 0");
@@ -6947,7 +6952,7 @@ blockSize_explicitDelimiter(const ZSTD_Sequence* inSeqs, size_t inSeqsSize, ZSTD
     }
     if (!end)
         RETURN_ERROR(externalSequences_invalid, "Reached end of sequences without finding a block delimiter");
-    return blockSize;
+    return (size_t)blockSize;
 }
 
 static size_t determine_blockSize(ZSTD_SequenceFormat_e mode,
