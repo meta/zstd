@@ -33,9 +33,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *src, size_t size)
     ZSTD_getDecompressedSize(src, size);
     ZSTD_findFrameCompressedSize(src, size);
     ZSTD_getDictID_fromFrame(src, size);
-    ZSTD_findDecompressedSize(src, size);
     /* Unlike findDecompressedSize(), this API never returns UNKNOWN. */
     FUZZ_ASSERT(ZSTD_decompressBound(src, size) != ZSTD_CONTENTSIZE_UNKNOWN);
+    {   unsigned long long const dSize = ZSTD_findDecompressedSize(src, size);
+        unsigned long long const bound = ZSTD_decompressBound(src, size);
+        /* When every frame declares its size, the bound is that exact total,
+         * and an overflowing total is an error for both. */
+        if (dSize != ZSTD_CONTENTSIZE_UNKNOWN && FUZZ_isCurrentFormat(src, size))
+            FUZZ_ASSERT(bound == dSize);
+    }
     ZSTD_frameHeaderSize(src, size);
     ZSTD_isFrame(src, size);
     ZSTD_getFrameHeader(&zfh, src, size);
