@@ -1387,6 +1387,101 @@ static unsigned test_histCountWksp(unsigned seed, unsigned testNb)
     return testNb;
 }
 
+static void test_histCountOverflowCase(const BYTE* source, size_t sourceSize,
+                                      unsigned maxSymbolValue)
+{
+    unsigned workspace[HIST_WKSP_SIZE_U32];
+    unsigned expected[260] = { 0 };
+    unsigned expectedMaxSymbol = 0;
+    unsigned expectedLargest = 0;
+    unsigned fast;
+    size_t index;
+
+    for (index = 0; index < sourceSize; ++index) {
+        unsigned const symbol = source[index];
+        CHECK(symbol <= maxSymbolValue);
+        ++expected[symbol];
+        expectedMaxSymbol = MAX(expectedMaxSymbol, symbol);
+        expectedLargest = MAX(expectedLargest, expected[symbol]);
+    }
+    /* Entries past maxSymbolValue must not be written. */
+    for (index = maxSymbolValue + 1; index < COUNTOF(expected); ++index)
+        expected[index] = ~0U;
+
+    for (fast = 0; fast < 2; ++fast) {
+        unsigned count[COUNTOF(expected)];
+        unsigned maxSymbol = maxSymbolValue;
+        size_t result;
+        memset(count, 0xFF, sizeof(count));
+        result = fast
+            ? HIST_countFast_wksp(count, &maxSymbol, source, sourceSize, workspace, sizeof(workspace))
+            : HIST_count_wksp(count, &maxSymbol, source, sourceSize, workspace, sizeof(workspace));
+        CHECK_EQ(result, expectedLargest);
+        CHECK_EQ(maxSymbol, expectedMaxSymbol);
+        for (index = 0; index < COUNTOF(expected); ++index)
+            CHECK_EQ(count[index], expected[index]);
+    }
+}
+
+static void test_histCountOverflow(unsigned testNb)
+{
+    /* The SVE2 histogram counts in chunks of 65520 bytes. Cover the sizes
+     * around 1 and 2 chunks, 16-bit wraparound, and a 4-chunk input. */
+    static const size_t sizes[] = {
+        65519, 65520, 65521, 65536, 131040, 131041, 131072, 196625
+    };
+    static const unsigned symbols[] = { 0, 63, 64, 159, 160, 255 };
+    size_t const capacity = sizes[COUNTOF(sizes) - 1];
+    BYTE* const source = (BYTE*)malloc(capacity);
+    unsigned workspace[HIST_WKSP_SIZE_U32];
+    unsigned symbol;
+    size_t sizeIndex, symbolIndex, index;
+    CHECK(source != NULL);
+
+    DISPLAYLEVEL(3, "test%3u : histogram counter overflow : ", testNb);
+
+    /* Every symbol, so every counter lane overflows. */
+    for (symbol = 0; symbol <= 255; ++symbol) {
+        memset(source, (int)symbol, 131072);
+        test_histCountOverflowCase(source, 65536, symbol);
+        test_histCountOverflowCase(source, 131072, 255);
+    }
+
+    /* Every size, for symbols in each pass, plus a differing tail. */
+    for (symbolIndex = 0; symbolIndex < COUNTOF(symbols); ++symbolIndex) {
+        symbol = symbols[symbolIndex];
+        memset(source, (int)symbol, capacity);
+        for (sizeIndex = 0; sizeIndex < COUNTOF(sizes); ++sizeIndex) {
+            test_histCountOverflowCase(source, sizes[sizeIndex], symbol);
+            test_histCountOverflowCase(source, sizes[sizeIndex], 255);
+        }
+        for (index = 65536; index < capacity; ++index)
+            source[index] = (BYTE)(symbol + 1 + (index - 65536) % 255);
+        test_histCountOverflowCase(source, capacity, 255);
+    }
+
+    /* Per-chunk max symbols that rise and then fall. */
+    memset(source, 1, 65520);
+    memset(source + 65520, 255, 65520);
+    memset(source + 131040, 0, capacity - 131040);
+    test_histCountOverflowCase(source, capacity, 255);
+
+    /* A symbol out of range in the last chunk is an error. */
+    {   unsigned count[260];
+        unsigned maxSymbol = 159;
+        memset(source, 1, capacity);
+        source[capacity - 1] = 160;
+        memset(count, 0xFF, sizeof(count));
+        CHECK_EQ(HIST_count_wksp(count, &maxSymbol, source, capacity, workspace, sizeof(workspace)),
+                 ERROR(maxSymbolValue_tooSmall));
+        CHECK_EQ(maxSymbol, 159);
+        for (index = 160; index < COUNTOF(count); ++index)
+            CHECK_EQ(count[index], ~0U);
+    }
+    free(source);
+    DISPLAYLEVEL(3, "OK \n");
+}
+
 static void test_setCParams(unsigned tnb)
 {
     ZSTD_CCtx* const cctx = ZSTD_createCCtx();
@@ -3585,6 +3680,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
     DISPLAYLEVEL(3, "OK \n");
 
     testNb = test_histCountWksp(seed, testNb);
+    test_histCountOverflow(testNb++);
 
     DISPLAYLEVEL(3, "test%3u : compress %u bytes : ", testNb++, (unsigned)CNBuffSize);
     {   ZSTD_CCtx* const cctx = ZSTD_createCCtx();
