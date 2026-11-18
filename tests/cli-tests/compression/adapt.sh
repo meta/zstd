@@ -5,6 +5,12 @@ set -e
 # Test --adapt
 zstd -f file --adapt -c | zstd -t
 
+# Out-of-range bounds are clamped to the supported levels, as with -# and --fast=#
+zstd -f file --adapt=min=-200000 -c | zstd -t
+zstd -f file --adapt=min=-200000,max=-200000 -c | zstd -t
+zstd -f file --adapt=min=1,max=200000 -c | zstd -t
+zstd -f file --adapt=min=200000,max=200000 -c | zstd -t
+
 datagen -g100M > file100M
 
 # Pick parameters to force fast adaptation, even on slow systems
