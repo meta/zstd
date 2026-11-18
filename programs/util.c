@@ -325,7 +325,7 @@ int UTIL_setFDStat(const int fd, const char *filename, const stat_t *statbuf)
      * Security depends on permissions not containing the setuid or
      * setgid bits." */
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__wasi__)
 #ifdef ZSTD_HAVE_FCHOWN
     if (fd >= 0) {
         res += fchown(fd, -1, statbuf->st_gid);  /* Apply group ownership */
@@ -338,7 +338,7 @@ int UTIL_setFDStat(const int fd, const char *filename, const stat_t *statbuf)
 
     res += UTIL_fchmod(fd, filename, &curStatBuf, statbuf->st_mode & 0777);  /* Copy file permissions */
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__wasi__)
 #ifdef ZSTD_HAVE_FCHOWN
     if (fd >= 0) {
         res += fchown(fd, statbuf->st_uid, -1);  /* Apply user ownership */
