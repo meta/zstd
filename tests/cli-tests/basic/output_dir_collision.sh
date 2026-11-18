@@ -39,4 +39,14 @@ zstd -d -f --rm --output-dir-flat dtout dt1/a.tar.zst dt2/a.tzst && die "Suffix 
 test -f dt1/a.tar.zst
 test -f dt2/a.tzst
 test ! -e dtout/a.tar
+
+mkdir de1 de2 deout
+printf 'first\n' | zstd -q > de1/x.zst
+printf 'second\n' | zstd -q > de2/x.zst
+printf 'third\n' > de1/y
+
+println "+ zstd --exclude-compressed --output-dir-flat deout de1/x.zst de2/x.zst de1/y" >&2
+zstd --exclude-compressed --output-dir-flat deout de1/x.zst de2/x.zst de1/y
+test -f deout/y.zst
+test ! -e deout/x.zst.zst
 exit 0

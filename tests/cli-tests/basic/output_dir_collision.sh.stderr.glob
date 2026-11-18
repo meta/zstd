@@ -13,3 +13,5 @@ zstd: no files were processed; --output-dir-mirror can preserve the input direct
 + zstd -d -f --rm --output-dir-flat dtout dt1/a.tar.zst dt2/a.tzst
 zstd: a.tar: multiple input files map to the same output file name
 zstd: no files were processed; --output-dir-mirror can preserve the input directory structure
++ zstd --exclude-compressed --output-dir-flat deout de1/x.zst de2/x.zst de1/y
+...

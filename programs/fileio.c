@@ -2516,6 +2516,25 @@ static unsigned long long FIO_getLargestFileSize(const char** inFileNames, unsig
     return maxFileSize;
 }
 
+/* FIO_createIncludedNamesTable() :
+ * Copies srcNamesTable, with NULL entries for files skipped by --exclude-compressed.
+ * Free the result with free().
+ */
+static const char**
+FIO_createIncludedNamesTable(const FIO_prefs_t* const prefs, const char** srcNamesTable, unsigned nbFiles)
+{
+    unsigned u;
+    const char** const includedNamesTable = (const char**)malloc(nbFiles * sizeof(char*));
+    if (includedNamesTable == NULL)
+        EXM_THROW(74, "%s : not enough memory for includedNamesTable", strerror(errno));
+    for (u = 0; u < nbFiles; ++u) {
+        int const excluded = prefs->excludeCompressedFiles == 1
+                          && UTIL_isCompressedFile(srcNamesTable[u], compressedFileExtensions);
+        includedNamesTable[u] = excluded ? NULL : srcNamesTable[u];
+    }
+    return includedNamesTable;
+}
+
 /* FIO_compressMultipleFilenames() :
  * compress nbFiles files
  * into either one destination (outFileName),
@@ -2563,10 +2582,14 @@ int FIO_compressMultipleFilenames(FIO_ctx_t* const fCtx,
         if (outMirroredRootDirName)
             UTIL_mirrorSourceFilesDirectories(inFileNamesTable, (unsigned)fCtx->nbFilesTotal, outMirroredRootDirName);
 
-        if (outDirName && !outMirroredRootDirName
-          && FIO_checkFilenameCollisions(inFileNamesTable, (unsigned)fCtx->nbFilesTotal)) {
-            FIO_freeCResources(&ress);
-            return 1;
+        if (outDirName && !outMirroredRootDirName) {
+            const char** const includedNamesTable = FIO_createIncludedNamesTable(prefs, inFileNamesTable, (unsigned)fCtx->nbFilesTotal);
+            int const collision = FIO_checkFilenameCollisions(includedNamesTable, (unsigned)fCtx->nbFilesTotal);
+            free((void*)includedNamesTable);
+            if (collision) {
+                FIO_freeCResources(&ress);
+                return 1;
+            }
         }
 
         for (; fCtx->currFileIdx < fCtx->nbFilesTotal; ++fCtx->currFileIdx) {
