@@ -282,10 +282,8 @@ the last one takes effect.
 * `--output-dir-flat DIR`:
     resulting files are stored into target `DIR` directory,
     instead of same directory as origin file.
-    Be aware that this command can introduce name collision issues,
-    if multiple files, from different directories, end up having the same name.
-    Collision resolution ensures first file with a given name will be present in `DIR`,
-    while in combination with `-f`, the last file will be present instead.
+    If multiple files, from different directories, would end up having the same name,
+    `zstd` reports an error and doesn't process any file.
 * `--output-dir-mirror DIR`:
     similar to `--output-dir-flat`,
     the output files are stored underneath target `DIR` directory,
@@ -294,8 +292,6 @@ the last one takes effect.
     If input directory contains "..", the files in this directory will be ignored.
     If input directory is an absolute directory (i.e. "/var/tmp/abc"),
     it will be stored into the "output-dir/var/tmp/abc".
-    If there are multiple input files or directories,
-    name collision resolution will follow the same rules as `--output-dir-flat`.
 * `--format=FORMAT`:
     compress and decompress in other formats. If compiled with
     support, zstd can compress to or decompress from other compression algorithm
