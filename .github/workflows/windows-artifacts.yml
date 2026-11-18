@@ -89,6 +89,18 @@ jobs:
         if: matrix.shell == 'msys2'
         run: test -f zstd-${{ github.ref_name }}-${{ matrix.ziparch }}/dll/libzstd.lib
 
+      - name: Add MSBuild to PATH
+        if: matrix.shell == 'msys2'
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # tag=v3.0.0
+
+      - name: Build packaged Visual Studio example (MSYS2)
+        if: matrix.shell == 'msys2'
+        shell: pwsh
+        run: |
+          # Build a copy outside the checkout: keeps the artifact clean and repo headers out of reach.
+          Copy-Item -Recurse zstd-${{ github.ref_name }}-${{ matrix.ziparch }} $env:RUNNER_TEMP\pkg
+          msbuild $env:RUNNER_TEMP\pkg\example\fullbench-dll.sln /p:Configuration=Release /p:Platform=${{ matrix.env == 'i686' && 'Win32' || 'x64' }} /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
+
       - name: Create artifacts (CMake)
         if: matrix.shell == 'cmake'
         run: |
