@@ -1752,13 +1752,12 @@ static size_t ZSTD_execSequence(BYTE* op,
     /* copy Match */
     {
         const U32 overlapRisk = (((size_t)(litEnd - endMatch)) < 12);
-        const BYTE* match = op - sequence.offset;            /* possible underflow at op - offset ? */
+        const BYTE* match = op - sequence.offset;            /* >= base : see the offset check above */
         size_t qutt = 12;
         U64 saved[2];
 
         /* check */
         if (match < base) return ERROR(corruption_detected);
-        if (sequence.offset > (size_t)base) return ERROR(corruption_detected);
 
         /* save beginning of literal sequence, in case of write overlap */
         if (overlapRisk)
