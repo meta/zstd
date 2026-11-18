@@ -17,6 +17,9 @@ jobs:
     # For msys2, see https://ariya.io/2020/07/on-github-actions-with-msys2
     runs-on: ${{ matrix.shell == 'cmake' && 'windows-11-arm' || 'windows-latest' }}
     strategy:
+      # TEMP: remove with fix-win-dll-package trigger. Keeps the pre-existing
+      # ARM64 failure from cancelling the MSYS2 package test.
+      fail-fast: false
       # For msys2, see https://github.com/msys2/setup-msys2
       matrix:
         include:
