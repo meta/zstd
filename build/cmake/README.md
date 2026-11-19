@@ -63,6 +63,9 @@ cmake -B build -G Xcode -DCMAKE_TOOLCHAIN_FILE=<Path To ios.toolchain.cmake> -DP
 ### how to use it with CMake FetchContent
 
 For all options available, you can see it on <https://github.com/facebook/zstd/blob/dev/build/cmake/lib/CMakeLists.txt>
+
+To override automatic subproject detection, use `set(ZSTD_IS_SUBPROJECT ON)`(or `OFF`) before calling `add_subdirectory()` or `FetchContent_MakeAvailable()`.
+
 ```cmake
 include(FetchContent)
 
