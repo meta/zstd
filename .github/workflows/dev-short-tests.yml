@@ -451,6 +451,8 @@ jobs:
         LDFLAGS="-static" CC=$XCC QEMU_SYS=$XEMU make -j -C tests test-cli-tests
         CFLAGS="-O3 -march=armv8.2-a+sve2" LDFLAGS="-static" CC=$XCC QEMU_SYS=$XEMU make -j check
         CFLAGS="-O3 -march=armv8.2-a+sve2" LDFLAGS="-static" CC=$XCC QEMU_SYS=$XEMU make -j -C tests test-cli-tests
+        # unit tests only (-i0): they check the SVE2 histogram directly
+        CFLAGS="-O3 -march=armv8.2-a+sve2" LDFLAGS="-static" CC=$XCC QEMU_SYS=$XEMU make -j -C tests test-fuzzer FUZZERTEST=-i0
 # This test is only compatible with standard libraries that support BTI (Branch Target Identification).
 # Unfortunately, the standard library provided on Ubuntu 24.04 does not have this feature enabled.
 #        make clean
