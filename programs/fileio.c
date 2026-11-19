@@ -780,8 +780,17 @@ void FIO_determineHasStdinInput(FIO_ctx_t* const fCtx, const FileNamesTable* con
 *  Functions
 ***************************************/
 /** FIO_removeFile() :
- * @result : Unlink `fileName`, even if it's read-only */
-static int FIO_removeFile(const char* path)
+ * Unlink `path`, even if it's read-only.
+ * When `expected` is not NULL, only unlink if `path` still resolves to the
+ * file it describes (same device and inode, typically the source file that
+ * was actually opened and processed). If a parent directory was swapped
+ * between processing and removal, `path` now points at a different file :
+ * refuse instead of deleting it. Pass NULL when there is no identity to
+ * bind to (destination artefacts).
+ * note : identity is checked by UTIL_isSameFileStat(), which can't do it yet
+ *        on Windows, where stat_t carries no file identity.
+ * @result : 0 on success or safe refusal, nonzero on removal failure. */
+static int FIO_removeFile(const char* path, const stat_t* expected)
 {
     stat_t statbuf;
     if (!UTIL_stat(path, &statbuf)) {
@@ -790,6 +799,10 @@ static int FIO_removeFile(const char* path)
     }
     if (!UTIL_isRegularFileStat(&statbuf)) {
         DISPLAYLEVEL(2, "zstd: Refusing to remove non-regular file %s\n", path);
+        return 0;
+    }
+    if (expected != NULL && !UTIL_isSameFileStat(path, path, expected, &statbuf)) {
+        DISPLAYLEVEL(1, "zstd: %s changed while processing -- ignored for removal\n", path);
         return 0;
     }
 #if defined(_WIN32)
@@ -920,7 +933,7 @@ FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
         /* need to unlink */
         if (dstExists) {
             /* still exists only if remove() failed */
-            dstExists = FIO_removeFile(dstFileName) != 0;
+            dstExists = FIO_removeFile(dstFileName, NULL) != 0;
         } else {
             (void)remove(dstFileName);  /* dangling link */
         }
@@ -2194,7 +2207,7 @@ static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
 
         if ( (result != 0)
           && strcmp(dstFileName, stdoutmark) ) {
-            FIO_removeFile(dstFileName);
+            FIO_removeFile(dstFileName, NULL);
         }
     }
 
@@ -2393,7 +2406,7 @@ FIO_compressFilename_srcFile(FIO_ctx_t* const fCtx,
          * delete both the source and destination files.
          */
         clearHandler();
-        if (FIO_removeFile(srcFileName))
+        if (FIO_removeFile(srcFileName, &srcFileStat))
             EXM_THROW(1, "zstd: %s: %s", srcFileName, strerror(errno));
     }
     return result;
@@ -3214,7 +3227,7 @@ static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
         if ( (result != 0)  /* operation failure */
           && strcmp(dstFileName, stdoutmark)  /* special case : don't remove() stdout */
           ) {
-            FIO_removeFile(dstFileName);  /* remove decompression artefact; note: don't do anything special if remove() fails */
+            FIO_removeFile(dstFileName, NULL);  /* remove decompression artefact; note: don't do anything special if remove() fails */
         }
     }
 
@@ -3271,7 +3284,7 @@ static int FIO_decompressSrcFile(FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs
          * delete both the source and destination files.
          */
         clearHandler();
-        if (FIO_removeFile(srcFileName)) {
+        if (FIO_removeFile(srcFileName, &srcFileStat)) {
             /* failed to remove src file */
             DISPLAYLEVEL(1, "zstd: %s: %s \n", srcFileName, strerror(errno));
             return 1;
