@@ -8,34 +8,33 @@
  * You may select, at your option, one of the above-listed licenses.
  */
 
-/* Swap the source parent for a symlink right before its fclose, so --rm
- * re-resolves the pathname to a different file. */
+/* Swap the parent of ZSTD_TEST_RM_RACE_TARGET for a symlink right before the
+ * stream open on that file is closed, so a later removal re-resolves the
+ * pathname to a different file. The stream is matched by file identity, so
+ * it works for files opened with fopen() (source) or open()+fdopen()
+ * (destination) alike. */
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-typedef FILE* (*fopen_fn)(const char*, const char*);
 typedef int (*fclose_fn)(FILE*);
 
-static FILE* watched = NULL;
 static int done = 0;
 
-FILE* fopen(const char* path, const char* mode)
+static int isTarget(FILE* stream)
 {
-    static fopen_fn realFopen = NULL;
-    FILE* f;
-    if (realFopen == NULL)
-        realFopen = (fopen_fn)dlsym(RTLD_NEXT, "fopen");
-    f = realFopen(path, mode);
-    if (f != NULL && !done) {
-        const char* const target = getenv("ZSTD_TEST_RM_RACE_TARGET");
-        if (target != NULL && !strcmp(path, target))
-            watched = f;
-    }
-    return f;
+    const char* const target = getenv("ZSTD_TEST_RM_RACE_TARGET");
+    struct stat streamStat;
+    struct stat targetStat;
+    int const fd = fileno(stream);
+    return target != NULL && fd >= 0
+        && fstat(fd, &streamStat) == 0
+        && stat(target, &targetStat) == 0
+        && streamStat.st_dev == targetStat.st_dev
+        && streamStat.st_ino == targetStat.st_ino;
 }
 
 int fclose(FILE* stream)
@@ -43,18 +42,17 @@ int fclose(FILE* stream)
     static fclose_fn realClose = NULL;
     if (realClose == NULL)
         realClose = (fclose_fn)dlsym(RTLD_NEXT, "fclose");
-    if (!done && watched != NULL && stream == watched) {
+    if (!done && isTarget(stream)) {
         const char* const parent = getenv("ZSTD_TEST_RM_RACE_PARENT");
         const char* const saved = getenv("ZSTD_TEST_RM_RACE_SAVED");
         const char* const replacement = getenv("ZSTD_TEST_RM_RACE_REPLACEMENT");
         done = 1;
-        watched = NULL;
         if (parent == NULL || saved == NULL || replacement == NULL
          || rename(parent, saved) != 0 || symlink(replacement, parent) != 0) {
-            perror("source-rm-parent-race");
+            perror("rm-parent-race");
             _exit(91);
         }
-        fputs("source-rm-parent-race: changed source parent\n", stderr);
+        fputs("rm-parent-race: changed parent\n", stderr);
     }
     return realClose(stream);
 }

@@ -782,11 +782,12 @@ void FIO_determineHasStdinInput(FIO_ctx_t* const fCtx, const FileNamesTable* con
 /** FIO_removeFile() :
  * Unlink `path`, even if it's read-only.
  * When `expected` is not NULL, only unlink if `path` still resolves to the
- * file it describes (same device and inode, typically the source file that
- * was actually opened and processed). If a parent directory was swapped
- * between processing and removal, `path` now points at a different file :
- * refuse instead of deleting it. Pass NULL when there is no identity to
- * bind to (destination artefacts).
+ * file it describes (same device and inode) : typically the fstat() of the
+ * file actually opened, either the source file under --rm or the destination
+ * artefact of a failed operation. If a parent directory was swapped since,
+ * `path` now points at a different file : refuse instead of deleting it.
+ * Pass NULL when there is no identity to bind to (an existing destination
+ * file being overwritten).
  * note : identity is checked by UTIL_isSameFileStat(), which can't do it yet
  *        on Windows, where stat_t carries no file identity.
  * @result : 0 on success or safe refusal, nonzero on removal failure. */
@@ -2164,6 +2165,8 @@ static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
     int result;
     int transferStat = 0;
     int dstFd = -1;
+    stat_t dstFileStat;
+    int dstFileStatValid = 0;
 
     if (ress->io.dstFile == NULL) {
         int dstFileInitialPermissions = DEFAULT_FILE_PERMISSIONS;
@@ -2180,6 +2183,9 @@ static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
             FILE *dstFile = FIO_openDstFile(fCtx, prefs, srcFileName, dstFileName, dstFileInitialPermissions);
             if (dstFile==NULL) return 1;  /* could not open dstFileName */
             dstFd = fileno(dstFile);
+            /* identity of the file just created : on failure, remove only that one */
+            if (strcmp(dstFileName, stdoutmark))
+                dstFileStatValid = UTIL_fstat(dstFd, dstFileName, &dstFileStat);
             FIO_SyncCompressIO_setDst(&ress->io, dstFile);
         }
         /* Must only be added after FIO_openDstFile() succeeds. */
@@ -2206,8 +2212,9 @@ static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
         }
 
         if ( (result != 0)
-          && strcmp(dstFileName, stdoutmark) ) {
-            FIO_removeFile(dstFileName, NULL);
+          && strcmp(dstFileName, stdoutmark)
+          && dstFileStatValid ) {
+            FIO_removeFile(dstFileName, &dstFileStat);
         }
     }
 
@@ -3181,6 +3188,8 @@ static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
     int releaseDstFile = 0;
     int transferStat = 0;
     int dstFd = 0;
+    stat_t dstFileStat;
+    int dstFileStatValid = 0;
 
     if ((AIO_WritePool_getFile(ress.writeCtx) == NULL) && (prefs->testMode == 0)) {
         FILE *dstFile;
@@ -3197,6 +3206,9 @@ static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
         dstFile = FIO_openDstFile(fCtx, prefs, srcFileName, dstFileName, dstFilePermissions);
         if (dstFile==NULL) return 1;
         dstFd = fileno(dstFile);
+        /* identity of the file just created : on failure, remove only that one */
+        if (strcmp(dstFileName, stdoutmark))
+            dstFileStatValid = UTIL_fstat(dstFd, dstFileName, &dstFileStat);
         AIO_WritePool_setFile(ress.writeCtx, dstFile);
 
         /* Must only be added after FIO_openDstFile() succeeds.
@@ -3226,8 +3238,8 @@ static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
 
         if ( (result != 0)  /* operation failure */
           && strcmp(dstFileName, stdoutmark)  /* special case : don't remove() stdout */
-          ) {
-            FIO_removeFile(dstFileName, NULL);  /* remove decompression artefact; note: don't do anything special if remove() fails */
+          && dstFileStatValid ) {
+            FIO_removeFile(dstFileName, &dstFileStat);  /* remove decompression artefact; note: don't do anything special if remove() fails */
         }
     }
 
