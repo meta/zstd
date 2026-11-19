@@ -3907,6 +3907,43 @@ static int basicUnitTests(U32 const seed, double compressibility)
         ZSTD_freeCCtx(cctx);
     }
 
+    DISPLAYLEVEL(3, "test%3i : streaming after an abandoned stream and a one-shot or buffer-less frame : ", testNb++);
+    {
+        int abandon, start;
+        for (abandon = 0; abandon < 2; ++abandon) {
+            for (start = 0; start < 2; ++start) {
+                ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+                size_t const srcSize = 5000;
+                CHECK(cctx != NULL);
+                if (abandon == 0) {
+                    /* input left in the internal input buffer */
+                    ZSTD_inBuffer in = { CNBuffer, 1000, 0 };
+                    ZSTD_outBuffer out = { compressedBuffer, compressedBufferSize, 0 };
+                    CHECK_Z(ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_continue));
+                } else {
+                    /* compressed data left in the internal output buffer */
+                    ZSTD_inBuffer in = { CNBuffer, CNBuffSize, 0 };
+                    ZSTD_outBuffer out = { compressedBuffer, 1, 0 };
+                    CHECK(ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_flush) > 0);
+                }
+                if (start == 0) {
+                    CHECK_Z(ZSTD_compressCCtx(cctx, compressedBuffer, compressedBufferSize, CNBuffer, 100, 1));
+                } else {
+                    CHECK_Z(ZSTD_compressBegin(cctx, 1));
+                    CHECK_Z(ZSTD_compressEnd(cctx, compressedBuffer, compressedBufferSize, CNBuffer, 100));
+                }
+                {   ZSTD_inBuffer in = { CNBuffer, srcSize, 0 };
+                    ZSTD_outBuffer out = { compressedBuffer, compressedBufferSize, 0 };
+                    CHECK_EQ(ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_end), 0);
+                    CHECK_EQ(ZSTD_decompress(decodedBuffer, CNBuffSize, compressedBuffer, out.pos), srcSize);
+                    CHECK(!memcmp(decodedBuffer, CNBuffer, srcSize));
+                }
+                ZSTD_freeCCtx(cctx);
+            }
+        }
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : maxBlockSize = 2K : ", testNb++);
     {
         ZSTD_CCtx* cctx = ZSTD_createCCtx();
