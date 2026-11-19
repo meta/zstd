@@ -76,7 +76,7 @@ jobs:
           cd build\cmake
           mkdir build
           cd build
-          cmake.exe -G "Visual Studio 17 2022" -A ARM64 -DCMAKE_BUILD_TYPE=Release -DZSTD_BUILD_PROGRAMS=ON -DZSTD_BUILD_SHARED=ON -DZSTD_BUILD_STATIC=ON ..
+          cmake.exe -G "Visual Studio 18 2026" -A ARM64 -DCMAKE_BUILD_TYPE=Release -DZSTD_BUILD_PROGRAMS=ON -DZSTD_BUILD_SHARED=ON -DZSTD_BUILD_STATIC=ON ..
           cmake.exe --build . --config Release --parallel
 
       - name: Create artifacts (MSYS2)
