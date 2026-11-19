@@ -51,6 +51,30 @@ jobs:
       run: |
         nm cmake-build/lib/libzstd.a | grep -q HUF_decompress4X1_usingDTable_internal_fast_asm_loop
 
+  cmake-ccache:
+    name: "CMake ccache"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: Install ccache
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ccache
+    - name: Build with ccache
+      run: |
+        CC="ccache gcc" cmake -S build/cmake -B cmake-build-ccache
+        cmake --build cmake-build-ccache --target libzstd_static --verbose
+
+  cmake-xcode:
+    name: "CMake Xcode (Intel)"
+    runs-on: macos-15-intel
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: Build with Xcode
+      run: |
+        cmake -S build/cmake -B cmake-build-xcode -G Xcode -DCMAKE_OSX_ARCHITECTURES=x86_64
+        cmake --build cmake-build-xcode --target libzstd_static --config Release
+
   # Ubuntu-based cmake build using make wrapper
   # This test uses the make-driven cmake build to ensure compatibility
   # with the existing build system integration
