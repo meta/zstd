@@ -49,6 +49,7 @@
 #include "compress/hist.h" /* HIST_count_wksp */
 #include "compress/zstd_compress_internal.h" /* ZSTD_get1BlockSummary */
 #include "compress/zstd_ldm.h" /* LDM rolling hash */
+#include "compress/zstdmt_compress.h" /* ZSTDMT_getJobInputRange */
 #include "decompress/zstd_decompress_internal.h" /* ZSTD_DCtx */
 #include "decompress/zstd_ddict.h" /* empty DDict storage invariants */
 #include "bitstream.h"    /* BIT_reloadDStream boundary tests */
@@ -7104,6 +7105,27 @@ static int basicUnitTests(U32 const seed, double compressibility)
         }
     }
 
+    DISPLAYLEVEL(3, "test%3i : MT input ring protects source behind an external prefix : ", testNb++);
+    {   BYTE ring[8] = { 0 };
+        BYTE externalPrefix[3] = { 0 };
+        ZSTDMT_Range const src = { ring + 4, 4 };
+        ZSTDMT_Range prefix = { externalPrefix, sizeof(externalPrefix) };
+        ZSTDMT_Range inUse = ZSTDMT_getJobInputRange(prefix, src, 1);
+        CHECK(inUse.start == src.start && inUse.size == src.size);
+
+        /* Later jobs retain their preceding input-ring prefix. */
+        prefix.start = ring;
+        prefix.size = 4;
+        inUse = ZSTDMT_getJobInputRange(prefix, src, 0);
+        CHECK(inUse.start == prefix.start && inUse.size == prefix.size);
+
+        /* With no prefix, the source itself must remain protected. */
+        prefix.size = 0;
+        inUse = ZSTDMT_getJobInputRange(prefix, src, 0);
+        CHECK(inUse.start == src.start && inUse.size == src.size);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : oversized round buffer must fail cleanly on 32-bit : ", testNb++);
     /* On 32-bit builds the round buffer size can exceed 4 GiB, which
      * wraps in 32-bit size_t. Without the overflow check in
@@ -7914,6 +7936,53 @@ static int basicUnitTests(U32 const seed, double compressibility)
     DISPLAYLEVEL(3, "OK \n");
 
 #ifdef ZSTD_MULTITHREAD
+    DISPLAYLEVEL(3, "test%3i : MT input ring keeps source alive behind an external prefix : ", testNb++);
+    /* The first job's external prefix is not stored in the input ring, so only
+     * the job's own source may be protected from being overwritten.
+     * Only the first job is compressible, so later jobs finish quickly and the
+     * ring wraps while the first job is still running. */
+    {   ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+        ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+        size_t const prefixSize = 1 MB;
+        size_t const jobSize = 4 MB;
+        size_t const srroundTripCSize = 32 MB;
+        size_t const dstCapacity = ZSTD_compressBound(srroundTripCSize);
+        void* const prefix = malloc(prefixSize);
+        void* const src = calloc(1, srroundTripCSize);
+        void* const dst = malloc(dstCapacity);
+        void* const out = malloc(srroundTripCSize);
+        CHECK(cctx && dctx && prefix && src && dst && out);
+
+        RDG_genBuffer(prefix, prefixSize, compressibility, 0.5, seed);
+        memset(prefix, 0, sizeof(U32));   /* not a dictionary: no ZSTD_MAGIC_NUMBER */
+        RDG_genBuffer(src, jobSize, compressibility, 0.5, seed + 1);
+
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, 2));
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 19));
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, 17));
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_jobSize, (int)jobSize));
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1));
+        CHECK_Z(ZSTD_CCtx_refPrefix(cctx, prefix, prefixSize));
+        {   size_t const roundTripCSize = ZSTD_compress2(cctx, dst, dstCapacity, src, srroundTripCSize);
+            CHECK_Z(roundTripCSize);
+            CHECK_Z(ZSTD_DCtx_setParameter(dctx, ZSTD_d_windowLogMax, 17));
+            CHECK_Z(ZSTD_DCtx_refPrefix(dctx, prefix, prefixSize));
+            {   size_t const dSize = ZSTD_decompressDCtx(dctx, out, srroundTripCSize, dst, roundTripCSize);
+                CHECK_Z(dSize);
+                CHECK(dSize == srroundTripCSize);
+                CHECK(memcmp(out, src, srroundTripCSize) == 0);
+            }
+        }
+
+        free(out);
+        free(dst);
+        free(src);
+        free(prefix);
+        ZSTD_freeDCtx(dctx);
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : passing wrong full dict should fail on compressStream2 refPrefix ", testNb++);
     {   ZSTD_CCtx* cctx = ZSTD_createCCtx();
         size_t const srcSize = 1 MB + 5;   /* A little more than ZSTDMT_JOBSIZE_MIN */
