@@ -1729,7 +1729,7 @@ size_t ZSTD_compressBlock_lazy_specialized(
             }
         }
         if ( dictMode == ZSTD_noDict
-          && ((offset_1 > 0) & (MEM_read32(ip+1-offset_1) == MEM_read32(ip+1)))) {
+          && (offset_1 > 0) && (MEM_read32(ip+1-offset_1) == MEM_read32(ip+1))) {
             matchLength = ZSTD_count(ip+1+4, ip+1+4-offset_1, iend) + 4;
             if (depth==0) goto _storeSequence;
         }
