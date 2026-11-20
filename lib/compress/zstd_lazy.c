@@ -1457,8 +1457,14 @@ size_t ZSTD_RowFindBestMatch(
 /* On x86-64, the per-call cost of the outlined search (callee-saved register spills, dispatch,
  * re-deriving constants from ms) measured ~3% of level 6 compression time, so the hot noDict row
  * search is inlined into the lazy parsers there. Measured neutral on aarch64, so it stays outlined
- * on other targets, as do the other modes, to limit code size. */
+ * on other targets, as do the other modes, to limit code size. There, the greedy parser instead
+ * has variants with the search inlined for the default parameters (see ZSTD_compressBlock_greedy_row()). */
 #if defined(__x86_64__) || defined(_M_X64)
+#define ZSTD_ROW_SEARCH_INLINE_NODICT 1
+#else
+#define ZSTD_ROW_SEARCH_INLINE_NODICT 0
+#endif
+#if ZSTD_ROW_SEARCH_INLINE_NODICT
 #define ZSTD_ROW_SEARCH_FN_ATTRS_noDict FORCE_INLINE_ATTR
 #else
 #define ZSTD_ROW_SEARCH_FN_ATTRS_noDict ZSTD_SEARCH_FN_ATTRS
@@ -1565,6 +1571,9 @@ typedef enum { search_hashChain=0, search_binaryTree=1, search_rowHash=2 } searc
  * @param rowLog The row log (if applicable), in the range [4, 6].
  * @param searchMethod The search method to use (templated).
  * @param dictMode The dictMode (templated).
+ * @param inlineRowSearch If set (templated), the row search is inlined instead of
+ *        dispatched to its outlined function. @p mls and @p rowLog must then be
+ *        templated too.
  *
  * @returns The length of the longest match found, or < mls if no match is found.
  * If a match is found its offset is stored in @p offsetPtr.
@@ -1577,8 +1586,13 @@ FORCE_INLINE_TEMPLATE size_t ZSTD_searchMax(
     U32 const mls,
     U32 const rowLog,
     searchMethod_e const searchMethod,
-    ZSTD_dictMode_e const dictMode)
+    ZSTD_dictMode_e const dictMode,
+    int const inlineRowSearch)
 {
+    if (inlineRowSearch) {
+        assert(searchMethod == search_rowHash);
+        return ZSTD_RowFindBestMatch(ms, ip, iend, offsetPtr, mls, dictMode, rowLog);
+    }
     if (dictMode == ZSTD_noDict) {
         ZSTD_SWITCH_SEARCH_METHOD(noDict)
     } else if (dictMode == ZSTD_extDict) {
@@ -1596,14 +1610,19 @@ FORCE_INLINE_TEMPLATE size_t ZSTD_searchMax(
 *  Common parser - lazy strategy
 *********************************/
 
+/* ZSTD_compressBlock_lazy_specialized():
+ * The lazy parser, templated on (searchMethod, depth, dictMode). (mls, rowLog) must match
+ * ms->cParams; they are templated too when inlineRowSearch is set (see ZSTD_searchMax()).
+ */
 FORCE_INLINE_TEMPLATE
 ZSTD_ALLOW_POINTER_OVERFLOW_ATTR
-size_t ZSTD_compressBlock_lazy_generic(
+size_t ZSTD_compressBlock_lazy_specialized(
                         ZSTD_MatchState_t* ms, SeqStore_t* seqStore,
                         U32 rep[ZSTD_REP_NUM],
                         const void* src, size_t srcSize,
                         const searchMethod_e searchMethod, const U32 depth,
-                        ZSTD_dictMode_e const dictMode)
+                        ZSTD_dictMode_e const dictMode,
+                        const U32 mls, const U32 rowLog, const int inlineRowSearch)
 {
     const BYTE* const istart = (const BYTE*)src;
     const BYTE* ip = istart;
@@ -1613,8 +1632,6 @@ size_t ZSTD_compressBlock_lazy_generic(
     const BYTE* const base = ms->window.base;
     const U32 prefixLowestIndex = ms->window.dictLimit;
     const BYTE* const prefixLowest = base + prefixLowestIndex;
-    const U32 mls = BOUNDED(4, ms->cParams.minMatch, 6);
-    const U32 rowLog = BOUNDED(4, ms->cParams.searchLog, 6);
 
     U32 offset_1 = rep[0], offset_2 = rep[1];
     U32 offsetSaved1 = 0, offsetSaved2 = 0;
@@ -1632,7 +1649,9 @@ size_t ZSTD_compressBlock_lazy_generic(
                                      0;
     const U32 dictAndPrefixLength = (U32)((ip - prefixLowest) + (dictEnd - dictLowest));
 
-    DEBUGLOG(5, "ZSTD_compressBlock_lazy_generic (dictMode=%u) (searchFunc=%u)", (U32)dictMode, (U32)searchMethod);
+    DEBUGLOG(5, "ZSTD_compressBlock_lazy_specialized (dictMode=%u) (searchFunc=%u)", (U32)dictMode, (U32)searchMethod);
+    assert(mls == BOUNDED(4, ms->cParams.minMatch, 6));
+    assert(rowLog == BOUNDED(4, ms->cParams.searchLog, 6));
     ip += (dictAndPrefixLength == 0);
     if (dictMode == ZSTD_noDict) {
         U32 const curr = (U32)(ip - base);
@@ -1690,7 +1709,7 @@ size_t ZSTD_compressBlock_lazy_generic(
 
         /* first search (depth 0) */
         {   size_t offbaseFound = 999999999;
-            size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &offbaseFound, mls, rowLog, searchMethod, dictMode);
+            size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &offbaseFound, mls, rowLog, searchMethod, dictMode, inlineRowSearch);
             if (ml2 > matchLength)
                 matchLength = ml2, start = ip, offBase = offbaseFound;
         }
@@ -1738,7 +1757,7 @@ size_t ZSTD_compressBlock_lazy_generic(
                 }
             }
             {   size_t ofbCandidate=999999999;
-                size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode);
+                size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode, inlineRowSearch);
                 int const gain2 = (int)(ml2*4 - ZSTD_highbit32((U32)ofbCandidate));   /* raw approx */
                 int const gain1 = (int)(matchLength*4 - ZSTD_highbit32((U32)offBase) + 4);
                 if ((ml2 >= 4) && (gain2 > gain1)) {
@@ -1774,7 +1793,7 @@ size_t ZSTD_compressBlock_lazy_generic(
                     }
                 }
                 {   size_t ofbCandidate=999999999;
-                    size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode);
+                    size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode, inlineRowSearch);
                     int const gain2 = (int)(ml2*4 - ZSTD_highbit32((U32)ofbCandidate));   /* raw approx */
                     int const gain1 = (int)(matchLength*4 - ZSTD_highbit32((U32)offBase) + 7);
                     if ((ml2 >= 4) && (gain2 > gain1)) {
@@ -1862,6 +1881,23 @@ _storeSequence:
     /* Return the last literals size */
     return (size_t)(iend - anchor);
 }
+
+/* The lazy parser with (mls, rowLog) read at runtime from ms->cParams:
+ * searches are dispatched to the outlined search functions. */
+FORCE_INLINE_TEMPLATE
+ZSTD_ALLOW_POINTER_OVERFLOW_ATTR
+size_t ZSTD_compressBlock_lazy_generic(
+                        ZSTD_MatchState_t* ms, SeqStore_t* seqStore,
+                        U32 rep[ZSTD_REP_NUM],
+                        const void* src, size_t srcSize,
+                        const searchMethod_e searchMethod, const U32 depth,
+                        ZSTD_dictMode_e const dictMode)
+{
+    return ZSTD_compressBlock_lazy_specialized(ms, seqStore, rep, src, srcSize, searchMethod, depth, dictMode,
+                                               BOUNDED(4, ms->cParams.minMatch, 6),
+                                               BOUNDED(4, ms->cParams.searchLog, 6),
+                                               0 /* inlineRowSearch */);
+}
 #endif /* build exclusions */
 
 
@@ -1887,10 +1923,39 @@ size_t ZSTD_compressBlock_greedy_dedicatedDictSearch(
     return ZSTD_compressBlock_lazy_generic(ms, seqStore, rep, src, srcSize, search_hashChain, 0, ZSTD_dedicatedDictSearch);
 }
 
+#if !ZSTD_ROW_SEARCH_INLINE_NODICT
+/* The no-dictionary greedy row-hash parser is the default parser of level 5
+ * (and of level 4 for 128-256 KB sources). Variants for the (mls, rowLog) pairs
+ * of these default parameters inline the row search into the parser loop,
+ * avoiding a function call per search. Other pairs use the outlined searches.
+ * Not needed where the noDict row searches are inlined into every parser. */
+#define ZSTD_GREEDY_ROW_FN(mls, rowLog) ZSTD_compressBlock_greedy_row_##mls##_##rowLog
+
+#define ZSTD_GEN_GREEDY_ROW_FN(mls, rowLog)                                                    \
+    FORCE_NOINLINE size_t ZSTD_GREEDY_ROW_FN(mls, rowLog)(                                     \
+            ZSTD_MatchState_t* ms, SeqStore_t* seqStore, U32 rep[ZSTD_REP_NUM],                \
+            void const* src, size_t srcSize)                                                   \
+    {                                                                                          \
+        return ZSTD_compressBlock_lazy_specialized(ms, seqStore, rep, src, srcSize,            \
+                search_rowHash, 0, ZSTD_noDict, mls, rowLog, 1 /* inlineRowSearch */);         \
+    }
+
+ZSTD_GEN_GREEDY_ROW_FN(4, 4)
+ZSTD_GEN_GREEDY_ROW_FN(5, 4)
+ZSTD_GEN_GREEDY_ROW_FN(5, 5)
+#endif
+
 size_t ZSTD_compressBlock_greedy_row(
         ZSTD_MatchState_t* ms, SeqStore_t* seqStore, U32 rep[ZSTD_REP_NUM],
         void const* src, size_t srcSize)
 {
+#if !ZSTD_ROW_SEARCH_INLINE_NODICT
+    U32 const mls = BOUNDED(4, ms->cParams.minMatch, 6);
+    U32 const rowLog = BOUNDED(4, ms->cParams.searchLog, 6);
+    if (mls == 4 && rowLog == 4) return ZSTD_GREEDY_ROW_FN(4, 4)(ms, seqStore, rep, src, srcSize);
+    if (mls == 5 && rowLog == 4) return ZSTD_GREEDY_ROW_FN(5, 4)(ms, seqStore, rep, src, srcSize);
+    if (mls == 5 && rowLog == 5) return ZSTD_GREEDY_ROW_FN(5, 5)(ms, seqStore, rep, src, srcSize);
+#endif
     return ZSTD_compressBlock_lazy_generic(ms, seqStore, rep, src, srcSize, search_rowHash, 0, ZSTD_noDict);
 }
 
@@ -2082,7 +2147,7 @@ size_t ZSTD_compressBlock_lazy_extDict_generic(
 
         /* first search (depth 0) */
         {   size_t ofbCandidate = 999999999;
-            size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, ZSTD_extDict);
+            size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, ZSTD_extDict, 0);
             if (ml2 > matchLength)
                 matchLength = ml2, start = ip, offBase = ofbCandidate;
         }
@@ -2126,7 +2191,7 @@ size_t ZSTD_compressBlock_lazy_extDict_generic(
 
             /* search match, depth 1 */
             {   size_t ofbCandidate = 999999999;
-                size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, ZSTD_extDict);
+                size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, ZSTD_extDict, 0);
                 int const gain2 = (int)(ml2*4 - ZSTD_highbit32((U32)ofbCandidate));   /* raw approx */
                 int const gain1 = (int)(matchLength*4 - ZSTD_highbit32((U32)offBase) + 4);
                 if ((ml2 >= 4) && (gain2 > gain1)) {
@@ -2158,7 +2223,7 @@ size_t ZSTD_compressBlock_lazy_extDict_generic(
 
                 /* search match, depth 2 */
                 {   size_t ofbCandidate = 999999999;
-                    size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, ZSTD_extDict);
+                    size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, ZSTD_extDict, 0);
                     int const gain2 = (int)(ml2*4 - ZSTD_highbit32((U32)ofbCandidate));   /* raw approx */
                     int const gain1 = (int)(matchLength*4 - ZSTD_highbit32((U32)offBase) + 7);
                     if ((ml2 >= 4) && (gain2 > gain1)) {
