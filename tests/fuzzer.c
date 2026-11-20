@@ -1502,6 +1502,64 @@ static void test_setCParams(unsigned tnb)
     DISPLAYLEVEL(3, "OK \n");
 }
 
+static void test_blockSplitter_longLengthBoundaries(unsigned testNb)
+{
+    ZSTD_longLengthType_e const types[] = {
+        ZSTD_llt_literalLength, ZSTD_llt_matchLength
+    };
+    SeqDef sequences[] = { { 4, 1, 0 }, { 4, 1, 0 }, { 4, 1, 0 }, { 4, 1, 0 } };
+    BYTE literals[0x10000 + COUNTOF(sequences)];
+    BYTE llCode[COUNTOF(sequences) + 1];
+    BYTE mlCode[COUNTOF(sequences) + 1];
+    BYTE ofCode[COUNTOF(sequences) + 1];
+    SeqStore_t original = { 0 };
+    size_t type;
+
+    DISPLAYLEVEL(3, "test%3u : block splitter long length boundaries : ", testNb);
+    original.sequencesStart = sequences;
+    original.sequences = sequences + COUNTOF(sequences);
+    original.litStart = literals;
+    original.llCode = llCode;
+    original.mlCode = mlCode;
+    original.ofCode = ofCode;
+    original.maxNbSeq = COUNTOF(sequences);
+    original.maxNbLit = sizeof(literals);
+    original.longLengthPos = 2;
+
+    for (type = 0; type < COUNTOF(types); ++type) {
+        size_t start;
+        original.longLengthType = types[type];
+        original.lit = literals + COUNTOF(sequences)
+                     + (types[type] == ZSTD_llt_literalLength ? 0x10000 : 0);
+        for (start = 0; start <= COUNTOF(sequences); ++start) {
+            size_t end;
+            for (end = start; end <= COUNTOF(sequences); ++end) {
+                SeqStore_t chunk;
+                int const containsLong = start <= original.longLengthPos
+                                      && original.longLengthPos < end;
+                size_t i;
+                memset(llCode, 0xA5, sizeof(llCode));
+                memset(mlCode, 0xA5, sizeof(mlCode));
+                memset(ofCode, 0xA5, sizeof(ofCode));
+                ZSTD_deriveSeqStoreChunk(&chunk, &original, start, end);
+                ZSTD_seqToCodes(&chunk);
+                for (i = 0; i < COUNTOF(llCode); ++i) {
+                    int const inChunk = start <= i && i < end;
+                    int const isLong = i == original.longLengthPos;
+                    CHECK_EQ(llCode[i], !inChunk ? 0xA5 :
+                        isLong && types[type] == ZSTD_llt_literalLength ? MaxLL : 1);
+                    CHECK_EQ(mlCode[i], !inChunk ? 0xA5 :
+                        isLong && types[type] == ZSTD_llt_matchLength ? MaxML : 0);
+                    CHECK_EQ(ofCode[i], inChunk ? 2 : 0xA5);
+                }
+                CHECK_EQ(chunk.longLengthType, containsLong ? types[type] : ZSTD_llt_none);
+                if (containsLong) CHECK_EQ(chunk.longLengthPos, original.longLengthPos - start);
+            }
+        }
+    }
+    DISPLAYLEVEL(3, "OK \n");
+}
+
 static void test_blockSplitter_incompressibleExpansionProtection(unsigned testNb, unsigned seed)
 {
     DISPLAYLEVEL(3, "test%3i : Check block splitter doesn't oversplit incompressible data (seed %u): ", testNb, seed);
@@ -4486,6 +4544,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
     }
     DISPLAYLEVEL(3, "OK \n");
 
+    test_blockSplitter_longLengthBoundaries(testNb++);
     test_blockSplitter_incompressibleExpansionProtection(testNb++, seed);
     test_targetCBlockSize_dstCapacity(testNb++);
 
