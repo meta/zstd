@@ -141,6 +141,10 @@ MEM_STATIC ZSTD_SequenceLength ZSTD_getSequenceLength(SeqStore_t const* seqStore
 
 const SeqStore_t* ZSTD_getSeqStore(const ZSTD_CCtx* ctx);   /* compress & dictBuilder */
 int ZSTD_seqToCodes(const SeqStore_t* seqStorePtr);   /* compress, dictBuilder, decodeCorpus (shouldn't get its definition from here) */
+/* Derives the half-open sequence range [startIdx, endIdx). */
+void ZSTD_deriveSeqStoreChunk(SeqStore_t* resultSeqStore,
+                             const SeqStore_t* originalSeqStore,
+                             size_t startIdx, size_t endIdx);
 
 
 /***********************************************

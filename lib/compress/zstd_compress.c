@@ -3966,7 +3966,7 @@ static size_t ZSTD_countSeqStoreMatchBytes(const SeqStore_t* const seqStore)
 /* Derives the seqStore that is a chunk of the originalSeqStore from [startIdx, endIdx).
  * Stores the result in resultSeqStore.
  */
-static void ZSTD_deriveSeqStoreChunk(SeqStore_t* resultSeqStore,
+void ZSTD_deriveSeqStoreChunk(SeqStore_t* resultSeqStore,
                                const SeqStore_t* originalSeqStore,
                                      size_t startIdx, size_t endIdx)
 {
@@ -3978,7 +3978,7 @@ static void ZSTD_deriveSeqStoreChunk(SeqStore_t* resultSeqStore,
 
     /* Move longLengthPos into the correct position if necessary */
     if (originalSeqStore->longLengthType != ZSTD_llt_none) {
-        if (originalSeqStore->longLengthPos < startIdx || originalSeqStore->longLengthPos > endIdx) {
+        if (originalSeqStore->longLengthPos < startIdx || originalSeqStore->longLengthPos >= endIdx) {
             resultSeqStore->longLengthType = ZSTD_llt_none;
         } else {
             resultSeqStore->longLengthPos -= (U32)startIdx;
