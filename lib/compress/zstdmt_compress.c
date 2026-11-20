@@ -463,10 +463,7 @@ static void ZSTDMT_releaseCCtx(ZSTDMT_CCtxPool* pool, ZSTD_CCtx* cctx)
 
 /* ====   Serial State   ==== */
 
-typedef struct {
-    void const* start;
-    size_t size;
-} Range;
+typedef ZSTDMT_Range Range;
 
 typedef struct {
     /* All variables in the struct are protected by mutex. */
@@ -1593,9 +1590,8 @@ static size_t ZSTDMT_flushProduced(ZSTDMT_CCtx* mtctx, ZSTD_outBuffer* output, u
 }
 
 /**
- * Returns the range of data used by the earliest job that is not yet complete.
- * If the data of the first job is broken up into two segments, we cover both
- * sections.
+ * Returns the oldest input-ring range used by a job that is not yet complete.
+ * Protecting this range prevents ring reuse from reaching the job's source.
  */
 static Range ZSTDMT_getInputDataInUse(ZSTDMT_CCtx* mtctx)
 {
@@ -1617,11 +1613,10 @@ static Range ZSTDMT_getInputDataInUse(ZSTDMT_CCtx* mtctx)
         ZSTD_pthread_mutex_unlock(&mtctx->jobs[wJobID].job_mutex);
 
         if (consumed < mtctx->jobs[wJobID].src.size) {
-            Range range = mtctx->jobs[wJobID].prefix;
-            if (range.size == 0) {
-                /* Empty prefix */
-                range = mtctx->jobs[wJobID].src;
-            }
+            Range const range = ZSTDMT_getJobInputRange(
+                mtctx->jobs[wJobID].prefix,
+                mtctx->jobs[wJobID].src,
+                mtctx->jobs[wJobID].firstJob);
             /* Job source in multiple segments not supported yet */
             assert(range.start <= mtctx->jobs[wJobID].src.start);
             return range;

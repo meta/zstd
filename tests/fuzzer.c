@@ -48,6 +48,7 @@
 #include "pool.h"         /* POOL_sizeof */
 #include "compress/hist.h" /* HIST_count_wksp */
 #include "compress/zstd_compress_internal.h" /* ZSTD_get1BlockSummary */
+#include "compress/zstdmt_compress.h" /* ZSTDMT_getJobInputRange */
 #include "decompress/zstd_decompress_internal.h" /* ZSTD_DCtx */
 #include "decompress/zstd_ddict.h" /* empty DDict storage invariants */
 #include "bitstream.h"    /* BIT_reloadDStream boundary tests */
@@ -7014,6 +7015,27 @@ static int basicUnitTests(U32 const seed, double compressibility)
             ZSTD_freeCCtx(cctx);
         }
     }
+
+    DISPLAYLEVEL(3, "test%3i : MT input ring protects source behind an external prefix : ", testNb++);
+    {   BYTE ring[8] = { 0 };
+        BYTE externalPrefix[3] = { 0 };
+        ZSTDMT_Range const src = { ring + 4, 4 };
+        ZSTDMT_Range prefix = { externalPrefix, sizeof(externalPrefix) };
+        ZSTDMT_Range inUse = ZSTDMT_getJobInputRange(prefix, src, 1);
+        CHECK(inUse.start == src.start && inUse.size == src.size);
+
+        /* Later jobs retain their preceding input-ring prefix. */
+        prefix.start = ring;
+        prefix.size = 4;
+        inUse = ZSTDMT_getJobInputRange(prefix, src, 0);
+        CHECK(inUse.start == prefix.start && inUse.size == prefix.size);
+
+        /* With no prefix, the source itself must remain protected. */
+        prefix.size = 0;
+        inUse = ZSTDMT_getJobInputRange(prefix, src, 0);
+        CHECK(inUse.start == src.start && inUse.size == src.size);
+    }
+    DISPLAYLEVEL(3, "OK \n");
 
     DISPLAYLEVEL(3, "test%3i : oversized round buffer must fail cleanly on 32-bit : ", testNb++);
     /* On 32-bit builds the round buffer size can exceed 4 GiB, which
