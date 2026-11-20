@@ -1558,6 +1558,9 @@ if [ $LZ4MODE -eq 1 ]; then
     zstd -f tmp
     cat tmp.lz4 tmp.zst tmp.lz4 tmp.zst | zstd -d -f -o tmp
     truncateLastByte tmp.lz4 | zstd -t > $INTOVOID && die "incomplete frame not detected !"
+    checkSize=$(zstd -c --format=lz4 --check tmp | wc -c)
+    noCheckSize=$(zstd -c --format=lz4 --no-check tmp | wc -c)
+    [ "$checkSize" -eq "$((noCheckSize + 4))" ] || die "--check did not add the lz4 content checksum"
     rm -f tmp*
 else
     println "\nlz4 mode not supported"
