@@ -139,8 +139,8 @@ int UTIL_fstat(const int fd, const char* filename, stat_t* statbuf);
 
 /**
  * Instead of getting a file's stats, this updates them with the info in the
- * provided stat_t. Currently sets owner, group, atime, and mtime. Will only
- * update this info for regular files.
+ * provided stat_t. Sets owner, group, and permissions for regular files only.
+ * Timestamps are handled separately by UTIL_utime() or UTIL_utimeInDir().
  *
  * UTIL_setFDStat() also takes an fd, and will preferentially use that to
  * indicate which file to modify, If fd is -1, it will fall back to using the
@@ -156,6 +156,30 @@ int UTIL_setFDStat(const int fd, const char* filename, const stat_t* statbuf);
  * Does not validate filename is valid.
  */
 int UTIL_utime(const char* filename, const stat_t *statbuf);
+
+/*-****************************************
+*  Directory-relative file functions
+******************************************/
+/* Open filename's parent, or borrow refDir if refName has a byte-for-byte
+ * identical directory prefix. Equivalent paths are not canonicalized.
+ * Returns -1 if unavailable or the parent cannot be opened.
+ * Close with the same refDir, so a borrowed descriptor is not closed. */
+int UTIL_openParentDir(const char* filename, int refDir, const char* refName);
+void UTIL_closeParentDir(int dirfd, int refDir);
+
+/* These operations always take the full filename. With a parent descriptor,
+ * they resolve only its last component relative to that directory, even after
+ * the directory is renamed or replaced at its original pathname. This binding
+ * starts when the parent is opened; it does not pin the last component's
+ * identity or prevent its replacement between operations.
+ * With dirfd == -1 they retain the historical full-pathname behavior and
+ * portable operations, without a directory binding. */
+int UTIL_openInDir(int dirfd, const char* filename, int flags, mode_t mode);
+FILE* UTIL_fopenReadInDir(int dirfd, const char* filename);
+int UTIL_removeInDir(int dirfd, const char* filename);
+int UTIL_statInDir(int dirfd, const char* filename, stat_t* statbuf);
+int UTIL_isLinkInDir(int dirfd, const char* filename);
+int UTIL_utimeInDir(int dirfd, const char* filename, const stat_t* statbuf);
 
 /*
  * These helpers operate on a pre-populated stat_t, i.e., the result of
