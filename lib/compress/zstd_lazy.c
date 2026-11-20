@@ -1187,6 +1187,17 @@ ZSTD_row_maskOutHead(ZSTD_VecMask matches, U32 const head, U32 const rowEntries,
     return matches & ~((((ZSTD_VecMask)1 << groupWidth) - 1) << headSlotBit);
 }
 
+/* ZSTD_row_prefetchMatch():
+ * Prefetches the first two cache lines of a match candidate. The second line can lie
+ * past the end of the buffer, so its address is computed as an integer: a prefetch
+ * never faults, but forming a pointer out of bounds would be undefined behavior.
+ */
+FORCE_INLINE_TEMPLATE void ZSTD_row_prefetchMatch(const BYTE* match)
+{
+    PREFETCH_L1(match);
+    PREFETCH_L1((const BYTE*)((size_t)match + 64));
+}
+
 /* The high-level approach of the SIMD row based match finder is as follows:
  * - Figure out where to insert the new entry:
  *      - Generate a hash for current input position and split it into a one byte of tag and `rowHashLog` bits of index.
@@ -1293,7 +1304,8 @@ size_t ZSTD_RowFindBestMatch(
         ZSTD_VecMask matches = ZSTD_row_maskOutHead(
                 ZSTD_row_getMatchMask(tagRow, (BYTE)tag, headGrouped, rowEntries), head, rowEntries, groupWidth);
 
-        /* Cycle through the matches and prefetch */
+        /* Cycle through the matches and prefetch their first two cache lines:
+         * later candidates are compared at offset ml, and matches run long. */
         for (; (matches > 0) && (nbAttempts > 0); matches &= (matches - 1)) {
             U32 const matchPos = ((headGrouped + ZSTD_VecMask_next(matches)) / groupWidth) & rowMask;
             U32 const matchIndex = row[matchPos];
@@ -1302,9 +1314,9 @@ size_t ZSTD_RowFindBestMatch(
             if (matchIndex < lowLimit)
                 break;
             if ((dictMode != ZSTD_extDict) || matchIndex >= dictLimit) {
-                PREFETCH_L1(base + matchIndex);
+                ZSTD_row_prefetchMatch(base + matchIndex);
             } else {
-                PREFETCH_L1(dictBase + matchIndex);
+                ZSTD_row_prefetchMatch(dictBase + matchIndex);
             }
             matchBuffer[numMatches++] = matchIndex;
             --nbAttempts;
