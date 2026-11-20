@@ -453,9 +453,13 @@ MEM_STATIC void FSE_initCState2(FSE_CState_t* statePtr, const FSE_CTable* ct, U3
 
 MEM_STATIC void FSE_encodeSymbol(BIT_CStream_t* bitC, FSE_CState_t* statePtr, unsigned symbol)
 {
-    FSE_symbolCompressionTransform const symbolTT = ((const FSE_symbolCompressionTransform*)(statePtr->symbolTT))[symbol];
+    FSE_symbolCompressionTransform symbolTT;
     const U16* const stateTable = (const U16*)(statePtr->stateTable);
-    U32 const nbBitsOut  = (U32)((statePtr->value + symbolTT.deltaNbBits) >> 16);
+    U32 nbBitsOut;
+    /* a single 8-byte load, instead of one per field */
+    ZSTD_memcpy(&symbolTT, (const FSE_symbolCompressionTransform*)(statePtr->symbolTT) + symbol, sizeof(symbolTT));
+    /* value + deltaNbBits is positive : an unsigned shift, compilers reuse it as shift count and table index */
+    nbBitsOut = (U32)((size_t)(statePtr->value + symbolTT.deltaNbBits) >> 16);
     BIT_addBits(bitC, (BitContainerType)statePtr->value, nbBitsOut);
     statePtr->value = stateTable[ (statePtr->value >> nbBitsOut) + symbolTT.deltaFindState];
 }
