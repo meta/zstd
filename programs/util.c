@@ -8,6 +8,12 @@
  * You may select, at your option, one of the above-listed licenses.
  */
 
+/* Linux's O_PATH opens a directory without requiring read permission.
+ * Its feature-test macro must precede every system header. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#  define _GNU_SOURCE
+#endif
+
 /*-****************************************
 *  Dependencies
 ******************************************/
@@ -15,8 +21,17 @@
 #include <stdlib.h>     /* malloc, realloc, free */
 #include <stdio.h>      /* fprintf */
 #include <time.h>       /* clock_t, clock, CLOCKS_PER_SEC, nanosleep */
+#include <fcntl.h>      /* open, O_RDONLY, AT_FDCWD */
 #include <errno.h>
 #include <assert.h>
+
+#ifndef UTIL_HAVE_OPENAT
+#  if !defined(_WIN32) && (PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime)
+#    define UTIL_HAVE_OPENAT 1
+#  else
+#    define UTIL_HAVE_OPENAT 0
+#  endif
+#endif
 
 #if defined(__FreeBSD__)
 #include <sys/param.h> /* __FreeBSD_version */
@@ -36,9 +51,7 @@
 #  else
 #    define ZSTD_USE_UTIMENSAT 0
 #  endif
-#  if ZSTD_USE_UTIMENSAT
-#    include <fcntl.h>    /* AT_FDCWD */
-#  else
+#  if !ZSTD_USE_UTIMENSAT
 #    include <utime.h>    /* utime */
 #  endif
 #endif
@@ -51,6 +64,15 @@
 #  include <dirent.h>       /* opendir, readdir */
 #  include <string.h>       /* strerror, memcpy */
 #endif /* #ifdef _WIN32 */
+
+/* Recent glibc versions expose _Generic-based string macros under
+ * _GNU_SOURCE. Use the ordinary C90 functions in pre-C11 builds. */
+#if defined(__GLIBC__) && !defined(__cplusplus) \
+    && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L)
+#  undef strchr
+#  undef strrchr
+#  undef strstr
+#endif
 
 /*-****************************************
 *  Internal Macros
@@ -268,6 +290,16 @@ int UTIL_fchmod(const int fd, char const* filename, const stat_t* statbuf, mode_
     }
 }
 
+#if ZSTD_USE_UTIMENSAT
+static int UTIL_utimensat(int dirfd, const char* filename,
+                         const stat_t* statbuf, int flags)
+{
+    struct timespec timebuf[2] = { {0, UTIME_NOW} };  /* (atime, mtime) */
+    timebuf[1] = statbuf->st_mtim;
+    return utimensat(dirfd, filename, timebuf, flags);
+}
+#endif
+
 /* set access and modification times */
 int UTIL_utime(const char* filename, const stat_t *statbuf)
 {
@@ -283,12 +315,7 @@ int UTIL_utime(const char* filename, const stat_t *statbuf)
      * See https://docs.freebsd.org/en/books/porters-handbook/versions/.
      */
 #if ZSTD_USE_UTIMENSAT
-    {
-        /* (atime, mtime) */
-        struct timespec timebuf[2] = { {0, UTIME_NOW} };
-        timebuf[1] = statbuf->st_mtim;
-        ret = utimensat(AT_FDCWD, filename, timebuf, 0);
-    }
+    ret = UTIL_utimensat(AT_FDCWD, filename, statbuf, 0);
 #else
     {
         struct utimbuf timebuf;
@@ -300,6 +327,150 @@ int UTIL_utime(const char* filename, const stat_t *statbuf)
     errno = 0;
     UTIL_TRACE_RET(ret);
     return ret;
+}
+
+#if UTIL_HAVE_OPENAT && !ZSTD_USE_UTIMENSAT
+#  error "UTIL_HAVE_OPENAT requires utimensat()"
+#endif
+
+#if UTIL_HAVE_OPENAT
+static const char* UTIL_baseName(const char* filename)
+{
+    const char* const sep = strrchr(filename, '/');
+    return sep == NULL ? filename : sep + 1;
+}
+#endif
+
+int UTIL_openParentDir(const char* filename, int refDir, const char* refName)
+{
+#if UTIL_HAVE_OPENAT
+    /* The directory is only used to resolve names : O_SEARCH (or Linux O_PATH)
+     * doesn't require read permission on it. On platforms without either,
+     * opening a directory without read permission can still fail. */
+#  if defined(O_PATH)
+    int const flags = O_PATH | O_DIRECTORY | O_CLOEXEC;
+#  elif defined(O_SEARCH)
+    int const flags = O_SEARCH | O_DIRECTORY | O_CLOEXEC;
+#  else
+    int const flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
+#  endif
+    const char* const base = UTIL_baseName(filename);
+    size_t const prefixLen = (size_t)(base - filename);
+    char* dirName;
+    int fd;
+    if (*base == '\0') return -1;
+    if (refDir >= 0 && refName != NULL
+     && (size_t)(UTIL_baseName(refName) - refName) == prefixLen
+     && !memcmp(refName, filename, prefixLen))
+        return refDir;
+    if (prefixLen == 0) return open(".", flags);
+    dirName = (char*)malloc(prefixLen + 1);
+    if (dirName == NULL) return -1;
+    memcpy(dirName, filename, prefixLen);
+    dirName[prefixLen] = '\0';
+    fd = open(dirName, flags);
+    free(dirName);
+    return fd;
+#else
+    (void)filename; (void)refDir; (void)refName;
+    return -1;
+#endif
+}
+
+void UTIL_closeParentDir(int dirfd, int refDir)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0 && dirfd != refDir) close(dirfd);
+#else
+    (void)dirfd; (void)refDir;
+#endif
+}
+
+int UTIL_openInDir(int dirfd, const char* filename, int flags, mode_t mode)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) return openat(dirfd, UTIL_baseName(filename), flags, mode);
+#endif
+    (void)dirfd;
+#if defined(_WIN32)
+    return _open(filename, flags, mode);
+#else
+    return open(filename, flags, mode);
+#endif
+}
+
+FILE* UTIL_fopenReadInDir(int dirfd, const char* filename)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        int const fd = UTIL_openInDir(dirfd, filename, O_RDONLY, 0);
+        FILE* const f = fd < 0 ? NULL : fdopen(fd, "rb");
+        if (fd >= 0 && f == NULL) { int const e = errno; close(fd); errno = e; }
+        return f;
+    }
+#endif
+    (void)dirfd;
+    return fopen(filename, "rb");
+}
+
+int UTIL_removeInDir(int dirfd, const char* filename)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) return unlinkat(dirfd, UTIL_baseName(filename), 0);
+#endif
+    (void)dirfd;
+    return remove(filename);
+}
+
+int UTIL_statInDir(int dirfd, const char* filename, stat_t* statbuf)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        int ret;
+        filename = UTIL_baseName(filename);
+        UTIL_TRACE_CALL("UTIL_statInDir(%d, %s)", dirfd, filename);
+        ret = !fstatat(dirfd, filename, statbuf, 0);
+        UTIL_TRACE_RET(ret);
+        return ret;
+    }
+#endif
+    (void)dirfd;
+    return UTIL_stat(filename, statbuf);
+}
+
+int UTIL_isLinkInDir(int dirfd, const char* filename)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        stat_t statbuf;
+        int ret;
+        filename = UTIL_baseName(filename);
+        UTIL_TRACE_CALL("UTIL_isLinkInDir(%d, %s)", dirfd, filename);
+        ret = !fstatat(dirfd, filename, &statbuf, AT_SYMLINK_NOFOLLOW)
+            && S_ISLNK(statbuf.st_mode);
+        UTIL_TRACE_RET(ret);
+        return ret;
+    }
+#endif
+    (void)dirfd;
+    return UTIL_isLink(filename);
+}
+
+int UTIL_utimeInDir(int dirfd, const char* filename, const stat_t* statbuf)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        int ret;
+        filename = UTIL_baseName(filename);
+        UTIL_TRACE_CALL("UTIL_utimeInDir(%d, %s)", dirfd, filename);
+        ret = UTIL_utimensat(dirfd, filename, statbuf, AT_SYMLINK_NOFOLLOW);
+        errno = 0;
+        UTIL_TRACE_RET(ret);
+        return ret;
+    }
+#endif
+    (void)dirfd;
+    return UTIL_utime(filename, statbuf);
 }
 
 int UTIL_setFileStat(const char *filename, const stat_t *statbuf)
