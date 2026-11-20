@@ -1233,11 +1233,6 @@ size_t ZSTD_RowFindBestMatch(
     const BYTE* const prefixStart = base + dictLimit;
     const BYTE* const dictEnd = dictBase + dictLimit;
     const U32 curr = (U32)(ip-base);
-    const U32 maxDistance = 1U << cParams->windowLog;
-    const U32 lowestValid = ms->window.lowLimit;
-    const U32 withinMaxDistance = (curr - lowestValid > maxDistance) ? curr - maxDistance : lowestValid;
-    const U32 isDictionary = (ms->loadedDictEnd != 0);
-    const U32 lowLimit = isDictionary ? lowestValid : withinMaxDistance;
     const U32 rowEntries = (1U << rowLog);
     const U32 rowMask = rowEntries - 1;
     const U32 cappedSearchLog = MIN(cParams->searchLog, rowLog); /* nb of searches is capped at nb entries per row */
@@ -1304,22 +1299,30 @@ size_t ZSTD_RowFindBestMatch(
         ZSTD_VecMask matches = ZSTD_row_maskOutHead(
                 ZSTD_row_getMatchMask(tagRow, (BYTE)tag, headGrouped, rowEntries), head, rowEntries, groupWidth);
 
-        /* Cycle through the matches and prefetch their first two cache lines:
-         * later candidates are compared at offset ml, and matches run long. */
-        for (; (matches > 0) && (nbAttempts > 0); matches &= (matches - 1)) {
-            U32 const matchPos = ((headGrouped + ZSTD_VecMask_next(matches)) / groupWidth) & rowMask;
-            U32 const matchIndex = row[matchPos];
-            assert(matchPos != 0);
-            assert(numMatches < rowEntries);
-            if (matchIndex < lowLimit)
-                break;
-            if ((dictMode != ZSTD_extDict) || matchIndex >= dictLimit) {
-                ZSTD_row_prefetchMatch(base + matchIndex);
-            } else {
-                ZSTD_row_prefetchMatch(dictBase + matchIndex);
+        if (matches > 0) {   /* most searches have no candidate */
+            U32 const maxDistance = 1U << cParams->windowLog;
+            U32 const lowestValid = ms->window.lowLimit;
+            U32 const withinMaxDistance = (curr - lowestValid > maxDistance) ? curr - maxDistance : lowestValid;
+            U32 const isDictionary = (ms->loadedDictEnd != 0);
+            U32 const lowLimit = isDictionary ? lowestValid : withinMaxDistance;
+
+            /* Cycle through the matches and prefetch their first two cache lines:
+             * later candidates are compared at offset ml, and matches run long. */
+            for (; (matches > 0) && (nbAttempts > 0); matches &= (matches - 1)) {
+                U32 const matchPos = ((headGrouped + ZSTD_VecMask_next(matches)) / groupWidth) & rowMask;
+                U32 const matchIndex = row[matchPos];
+                assert(matchPos != 0);
+                assert(numMatches < rowEntries);
+                if (matchIndex < lowLimit)
+                    break;
+                if ((dictMode != ZSTD_extDict) || matchIndex >= dictLimit) {
+                    ZSTD_row_prefetchMatch(base + matchIndex);
+                } else {
+                    ZSTD_row_prefetchMatch(dictBase + matchIndex);
+                }
+                matchBuffer[numMatches++] = matchIndex;
+                --nbAttempts;
             }
-            matchBuffer[numMatches++] = matchIndex;
-            --nbAttempts;
         }
 
         /* Speed opt: insert current byte into hashtable too. This allows us to avoid one iteration of the loop
@@ -1336,7 +1339,6 @@ size_t ZSTD_RowFindBestMatch(
             U32 const matchIndex = matchBuffer[currMatch];
             size_t currentMl=0;
             assert(matchIndex < curr);
-            assert(matchIndex >= lowLimit);
 
             if ((dictMode != ZSTD_extDict) || matchIndex >= dictLimit) {
                 const BYTE* const match = base + matchIndex;
