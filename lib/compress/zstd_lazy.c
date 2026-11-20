@@ -2007,13 +2007,20 @@ size_t ZSTD_compressBlock_greedy_dedicatedDictSearch_row(
 #ifndef ZSTD_EXCLUDE_LAZY_BLOCK_COMPRESSOR
 /* The no-dictionary lazy hash-chain parser is the default parser of level 5 for
  * sources <= 16 KB, where it runs with mls == 4. That variant inlines the
- * hash-chain search into the parser loop, avoiding a function call per search. */
+ * hash-chain search into the parser loop, avoiding a function call per search.
+ * It runs on a local copy of the match state: the compiler cannot tell that the
+ * hash and chain table stores do not alias *ms, and would otherwise reload its
+ * fields in every search. The parser only updates nextToUpdate and lazySkipping. */
 FORCE_NOINLINE size_t ZSTD_compressBlock_lazy_4(
         ZSTD_MatchState_t* ms, SeqStore_t* seqStore, U32 rep[ZSTD_REP_NUM],
         void const* src, size_t srcSize)
 {
-    return ZSTD_compressBlock_lazy_specialized(ms, seqStore, rep, src, srcSize,
+    ZSTD_MatchState_t local = *ms;
+    size_t const lastLiterals = ZSTD_compressBlock_lazy_specialized(&local, seqStore, rep, src, srcSize,
             search_hashChain, 1, ZSTD_noDict, 4, BOUNDED(4, ms->cParams.searchLog, 6), 1 /* inlineSearch */);
+    ms->nextToUpdate = local.nextToUpdate;
+    ms->lazySkipping = local.lazySkipping;
+    return lastLiterals;
 }
 
 size_t ZSTD_compressBlock_lazy(
