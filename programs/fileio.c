@@ -393,6 +393,7 @@ static void FIO_SyncCompressIO_finish(FIO_SyncCompressIO* io)
 *  Signal (Ctrl-C trapping)
 **************************************/
 static const char* g_artefact = NULL;
+static int g_artefactDir = -1;
 static void INThandler(int sig)
 {
     assert(sig==SIGINT); (void)sig;
@@ -400,19 +401,23 @@ static void INThandler(int sig)
     signal(sig, SIG_IGN);  /* this invocation generates a buggy warning in Visual Studio */
 #endif
     if (g_artefact) {
-        assert(UTIL_isRegularFile(g_artefact));
-        remove(g_artefact);
+        (void)UTIL_removeInDir(g_artefactDir, g_artefact);
     }
     DISPLAY("\n");
     exit(2);
 }
-static void addHandler(char const* dstFileName)
+/* addHandler() :
+ * On Ctrl-C, remove `dstFileName` in its parent `dir` (-1 if unbound).
+ * Only for a regular file just created : `dstFileStat` is its fstat(). */
+static void addHandler(int dir, char const* dstFileName, const stat_t* dstFileStat)
 {
-    if (UTIL_isRegularFile(dstFileName)) {
+    if (dstFileStat != NULL && UTIL_isRegularFileStat(dstFileStat)) {
+        g_artefactDir = dir;
         g_artefact = dstFileName;
         signal(SIGINT, INThandler);
     } else {
         g_artefact = NULL;
+        g_artefactDir = -1;
     }
 }
 /* Idempotent */
@@ -420,6 +425,7 @@ static void clearHandler(void)
 {
     if (g_artefact) signal(SIGINT, SIG_DFL);
     g_artefact = NULL;
+    g_artefactDir = -1;
 }
 
 
@@ -779,21 +785,24 @@ void FIO_determineHasStdinInput(FIO_ctx_t* const fCtx, const FileNamesTable* con
 *  Functions
 ***************************************/
 /** FIO_removeFile() :
- * Unlink `path`, even if it's read-only.
- * When `expected` is not NULL, only unlink if `path` still resolves to the
+ * Unlink `path` in its parent `dir` (-1 if unbound),
+ * even if it's read-only.
+ * When `expected` is not NULL, check that `path` still resolves to the
  * file it describes (same device and inode) : typically the fstat() of the
  * file actually opened, either the source file under --rm or the destination
- * artefact of a failed operation. If a parent directory was swapped since,
- * `path` now points at a different file : refuse instead of deleting it.
+ * artefact of a failed operation. Without a directory binding, a parent
+ * directory swapped since makes `path` point at a different file : refuse
+ * instead of deleting it. The identity check and unlink are not atomic :
+ * the final path component can still be replaced between those operations.
  * Pass NULL when there is no identity to bind to (an existing destination
  * file being overwritten).
  * note : identity is checked by UTIL_isSameFileStat(), which can't do it yet
  *        on Windows, where stat_t carries no file identity.
  * @result : 0 on success or safe refusal, nonzero on removal failure. */
-static int FIO_removeFile(const char* path, const stat_t* expected)
+static int FIO_removeFile(int dir, const char* path, const stat_t* expected)
 {
     stat_t statbuf;
-    if (!UTIL_stat(path, &statbuf)) {
+    if (!UTIL_statInDir(dir, path, &statbuf)) {
         DISPLAYLEVEL(2, "zstd: Failed to stat %s while trying to remove it\n", path);
         return 0;
     }
@@ -812,14 +821,16 @@ static int FIO_removeFile(const char* path, const stat_t* expected)
         UTIL_chmod(path, &statbuf, _S_IWRITE);
     }
 #endif
-    return remove(path);
+    return UTIL_removeInDir(dir, path);
 }
 
 /** FIO_openSrcFile() :
  *  condition : `srcFileName` must be non-NULL.
  *  optional: `prefs` may be NULL.
+ *  `dir` is the source's parent descriptor, or -1 if unbound.
  * @result : FILE* to `srcFileName`, or NULL if it fails */
-static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, const char* srcFileName, stat_t* statbuf)
+static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, int dir,
+                             const char* srcFileName, stat_t* statbuf)
 {
     int allowBlockDevices = prefs != NULL ? prefs->allowBlockDevices : 0;
     assert(srcFileName != NULL);
@@ -831,7 +842,7 @@ static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, const char* srcFile
         return stdin;
     }
 
-    if (!UTIL_stat(srcFileName, statbuf)) {
+    if (!UTIL_statInDir(dir, srcFileName, statbuf)) {
         DISPLAYLEVEL(1, "zstd: can't stat %s : %s -- ignored \n",
                         srcFileName, strerror(errno));
         return NULL;
@@ -848,7 +859,7 @@ static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, const char* srcFile
         return NULL;
     }
 
-    {   FILE* const f = fopen(srcFileName, "rb");
+    {   FILE* const f = UTIL_fopenReadInDir(dir, srcFileName);
         if (f == NULL) {
             DISPLAYLEVEL(1, "zstd: %s: %s \n", srcFileName, strerror(errno));
             return NULL;
@@ -878,10 +889,14 @@ static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, const char* srcFile
 
 /** FIO_openDstFile() :
  *  condition : `dstFileName` must be non-NULL.
+ *  `dir` is the destination's parent descriptor, or -1 if unbound.
+ *  optional : `srcFileStat` is the fstat() of the opened source, or NULL
+ *             when there is no source file to compare against.
  * @result : FILE* to `dstFileName`, or NULL if it fails */
 static FILE*
-FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
-                const char* srcFileName, const char* dstFileName,
+FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs, int dir,
+                const char* srcFileName, const stat_t* srcFileStat,
+                const char* dstFileName,
                 const int mode)
 {
     stat_t dstStat;
@@ -899,17 +914,26 @@ FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
         return stdout;
     }
 
-    /* ensure dst is not the same as src */
-    if (srcFileName != NULL && UTIL_isSameFile(srcFileName, dstFileName)) {
+    dstExists = UTIL_statInDir(dir, dstFileName, &dstStat);
+    /* Compare the opened source with the destination we will actually modify.
+     * Resolving either full pathname again could reach a replacement parent. */
+    assert(srcFileStat == NULL || srcFileName != NULL);
+#if defined(_WIN32)
+    /* Windows stat_t has no usable file identity. Preserve the native handle
+     * comparison, including when the C runtime cannot stat the destination. */
+    if (srcFileStat != NULL && UTIL_isSameFile(srcFileName, dstFileName)) {
+#else
+    if (dstExists && srcFileStat != NULL
+     && UTIL_isSameFileStat(srcFileName, dstFileName, srcFileStat, &dstStat)) {
+#endif
         DISPLAYLEVEL(1, "zstd: Refusing to open an output file which will overwrite the input file \n");
         return NULL;
     }
 
-    dstExists = UTIL_stat(dstFileName, &dstStat);
     /* A dangling symbolic link counts as an existing file :
      * writing through it would create its target. */
     if ( (dstExists && UTIL_isRegularFileStat(&dstStat))
-      || (!dstExists && UTIL_isLink(dstFileName)) ) {
+      || (!dstExists && UTIL_isLinkInDir(dir, dstFileName)) ) {
         /* Check if destination file already exists */
 #if !defined(_WIN32)
         /* this test does not work on Windows :
@@ -933,9 +957,9 @@ FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
         /* need to unlink */
         if (dstExists) {
             /* still exists only if remove() failed */
-            dstExists = FIO_removeFile(dstFileName, NULL) != 0;
+            dstExists = FIO_removeFile(dir, dstFileName, NULL) != 0;
         } else {
-            (void)remove(dstFileName);  /* dangling link */
+            (void)UTIL_removeInDir(dir, dstFileName);  /* dangling link */
         }
     }
 
@@ -945,7 +969,7 @@ FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
         /* Windows requires opening the file as a "binary" file to avoid
          * mangling. This macro doesn't exist on unix. */
         const int openflags = O_WRONLY|O_CREAT|O_TRUNC|O_BINARY;
-        const int fd = _open(dstFileName, openflags, mode);
+        const int fd = UTIL_openInDir(dir, dstFileName, openflags, (mode_t)mode);
         FILE* f = NULL;
         if (fd != -1) {
             f = _fdopen(fd, "wb");
@@ -959,10 +983,10 @@ FIO_openDstFile(FIO_ctx_t* fCtx, FIO_prefs_t* const prefs,
         const int openflags = !dstExists ? O_WRONLY|O_CREAT|O_EXCL
                             : dstIsSpecial ? O_WRONLY
                             : O_WRONLY|O_TRUNC;
-        int fd = open(dstFileName, openflags, mode);
+        int fd = UTIL_openInDir(dir, dstFileName, openflags, (mode_t)mode);
         FILE* f = NULL;
         if (fd != -1 && dstIsSpecial && UTIL_isFdRegularFile(fd)) {
-            /* replaced by a regular file since UTIL_stat() : don't write into it */
+            /* replaced by a regular file since it was checked : don't write into it */
             close(fd);
             fd = -1;
             errno = EEXIST;
@@ -2052,6 +2076,7 @@ FIO_compressZstdFrame(FIO_ctx_t* const fCtx,
 
 /*! FIO_compressFilename_internal() :
  *  same as FIO_compressFilename_extRess(), with `ress.desFile` already opened.
+ *  `fileSize` describes the opened source, not a fresh lookup of its pathname.
  *  @return : 0 : compression completed correctly,
  *            1 : missing or pb opening srcFileName
  */
@@ -2060,13 +2085,12 @@ FIO_compressFilename_internal(FIO_ctx_t* const fCtx,
                               FIO_prefs_t* const prefs,
                               cRess_t* ress,
                               const char* dstFileName, const char* srcFileName,
-                              int compressionLevel)
+                              U64 fileSize, int compressionLevel)
 {
     UTIL_time_t const timeStart = UTIL_getTime();
     clock_t const cpuStart = clock();
     U64 readsize = 0;
     U64 compressedfilesize = 0;
-    U64 const fileSize = UTIL_getFileSize(srcFileName);
     DISPLAYLEVEL(5, "%s: %llu bytes \n", srcFileName, (unsigned long long)fileSize);
 
     /* compression format selection */
@@ -2156,17 +2180,23 @@ FIO_compressFilename_internal(FIO_ctx_t* const fCtx,
 static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
                                         FIO_prefs_t* const prefs,
                                         cRess_t* ress,
+                                        int srcDir,
                                         const char* dstFileName,
                                         const char* srcFileName,
                                         const stat_t* srcFileStat,
                                         int compressionLevel)
 {
     int closeDstFile = 0;
-    int result;
+    int result = 1;
     int transferStat = 0;
     int dstFd = -1;
     stat_t dstFileStat;
     int dstFileStatValid = 0;
+    int dstDir = -1;
+    const stat_t* const openedSrcStat = strcmp(srcFileName, stdinmark)
+                                     ? srcFileStat : NULL;
+    U64 const fileSize = openedSrcStat != NULL
+                      ? UTIL_getFileSizeStat(openedSrcStat) : UTIL_FILESIZE_UNKNOWN;
 
     if (ress->io.dstFile == NULL) {
         int dstFileInitialPermissions = DEFAULT_FILE_PERMISSIONS;
@@ -2179,9 +2209,11 @@ static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
 
         closeDstFile = 1;
         DISPLAYLEVEL(6, "FIO_compressFilename_dstFile: opening dst: %s \n", dstFileName);
+        if (strcmp(dstFileName, stdoutmark))
+            dstDir = UTIL_openParentDir(dstFileName, srcDir, srcFileName);
         {
-            FILE *dstFile = FIO_openDstFile(fCtx, prefs, srcFileName, dstFileName, dstFileInitialPermissions);
-            if (dstFile==NULL) return 1;  /* could not open dstFileName */
+            FILE *dstFile = FIO_openDstFile(fCtx, prefs, dstDir, srcFileName, openedSrcStat, dstFileName, dstFileInitialPermissions);
+            if (dstFile==NULL) goto cleanup;
             dstFd = fileno(dstFile);
             /* identity of the file just created : on failure, remove only that one */
             if (strcmp(dstFileName, stdoutmark))
@@ -2189,10 +2221,10 @@ static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
             FIO_SyncCompressIO_setDst(&ress->io, dstFile);
         }
         /* Must only be added after FIO_openDstFile() succeeds. */
-        addHandler(dstFileName);
+        addHandler(dstDir, dstFileName, dstFileStatValid ? &dstFileStat : NULL);
     }
 
-    result = FIO_compressFilename_internal(fCtx, prefs, ress, dstFileName, srcFileName, compressionLevel);
+    result = FIO_compressFilename_internal(fCtx, prefs, ress, dstFileName, srcFileName, fileSize, compressionLevel);
 
     if (closeDstFile) {
         clearHandler();
@@ -2208,16 +2240,18 @@ static int FIO_compressFilename_dstFile(FIO_ctx_t* const fCtx,
         }
 
         if (transferStat) {
-            UTIL_utime(dstFileName, srcFileStat);
+            UTIL_utimeInDir(dstDir, dstFileName, srcFileStat);
         }
 
         if ( (result != 0)
           && strcmp(dstFileName, stdoutmark)
           && dstFileStatValid ) {
-            FIO_removeFile(dstFileName, &dstFileStat);
+            FIO_removeFile(dstDir, dstFileName, &dstFileStat);
         }
     }
 
+cleanup:
+    UTIL_closeParentDir(dstDir, srcDir);
     return result;
 }
 
@@ -2353,10 +2387,10 @@ FIO_compressFilename_srcFile(FIO_ctx_t* const fCtx,
                              const char* srcFileName,
                              int compressionLevel)
 {
-    int result;
+    int result = 1;
     FILE* srcFile;
     stat_t srcFileStat;
-    U64 fileSize = UTIL_FILESIZE_UNKNOWN;
+    int srcDir = -1;
     DISPLAYLEVEL(6, "FIO_compressFilename_srcFile: %s \n", srcFileName);
 
     if (strcmp(srcFileName, stdinmark)) {
@@ -2386,23 +2420,22 @@ FIO_compressFilename_srcFile(FIO_ctx_t* const fCtx,
         return 0;
     }
 
-    srcFile = FIO_openSrcFile(prefs, srcFileName, &srcFileStat);
-    if (srcFile == NULL) return 1;   /* srcFile could not be opened */
-
-    if (strcmp(srcFileName, stdinmark)) /* Stdin doesn't have stats */
-        fileSize = UTIL_getFileSizeStat(&srcFileStat);
-    (void)fileSize;
+    if (strcmp(srcFileName, stdinmark))
+        srcDir = UTIL_openParentDir(srcFileName, -1, NULL);
+    srcFile = FIO_openSrcFile(prefs, srcDir, srcFileName, &srcFileStat);
+    if (srcFile == NULL) goto cleanup;
 
     FIO_SyncCompressIO_setSrc(&ress->io, srcFile);
     result = FIO_compressFilename_dstFile(
-            fCtx, prefs, ress,
+            fCtx, prefs, ress, srcDir,
             dstFileName, srcFileName,
             &srcFileStat, compressionLevel);
     FIO_SyncCompressIO_clearSrc(&ress->io);
 
     if (srcFile != NULL && fclose(srcFile)) {
         DISPLAYLEVEL(1, "zstd: %s: %s \n", srcFileName, strerror(errno));
-        return 1;
+        result = 1;
+        goto cleanup;
     }
 
     if ( prefs->removeSrcFile  /* --rm */
@@ -2413,9 +2446,11 @@ FIO_compressFilename_srcFile(FIO_ctx_t* const fCtx,
          * delete both the source and destination files.
          */
         clearHandler();
-        if (FIO_removeFile(srcFileName, &srcFileStat))
+        if (FIO_removeFile(srcDir, srcFileName, &srcFileStat))
             EXM_THROW(1, "zstd: %s: %s", srcFileName, strerror(errno));
     }
+cleanup:
+    UTIL_closeParentDir(srcDir, -1);
     return result;
 }
 
@@ -2580,11 +2615,16 @@ int FIO_compressMultipleFilenames(FIO_ctx_t* const fCtx,
     assert(outFileName != NULL || suffix != NULL);
     if (outFileName != NULL) {   /* output into a single destination (stdout typically) */
         FILE *dstFile;
+        int dstDir;
         if (FIO_multiFilesConcatWarning(fCtx, prefs, outFileName, 1 /* displayLevelCutoff */)) {
             FIO_freeCResources(&ress);
             return 1;
         }
-        dstFile = FIO_openDstFile(fCtx, prefs, NULL, outFileName, DEFAULT_FILE_PERMISSIONS);
+        dstDir = strcmp(outFileName, stdoutmark)
+               ? UTIL_openParentDir(outFileName, -1, NULL) : -1;
+        dstFile = FIO_openDstFile(fCtx, prefs, dstDir, NULL, NULL, outFileName, DEFAULT_FILE_PERMISSIONS);
+        /* The shared output is only used through its stream after opening. */
+        UTIL_closeParentDir(dstDir, -1);
         if (dstFile == NULL) {  /* could not open outFileName */
             error = 1;
         } else {
@@ -3180,16 +3220,18 @@ static int FIO_decompressFrames(FIO_ctx_t* const fCtx,
 static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
                                  FIO_prefs_t* const prefs,
                                  dRess_t ress,
+                                 int srcDir,
                                  const char* dstFileName,
                                  const char* srcFileName,
                                  const stat_t* srcFileStat)
 {
-    int result;
+    int result = 1;
     int releaseDstFile = 0;
     int transferStat = 0;
     int dstFd = 0;
     stat_t dstFileStat;
     int dstFileStatValid = 0;
+    int dstDir = -1;
 
     if ((AIO_WritePool_getFile(ress.writeCtx) == NULL) && (prefs->testMode == 0)) {
         FILE *dstFile;
@@ -3203,8 +3245,12 @@ static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
 
         releaseDstFile = 1;
 
-        dstFile = FIO_openDstFile(fCtx, prefs, srcFileName, dstFileName, dstFilePermissions);
-        if (dstFile==NULL) return 1;
+        if (strcmp(dstFileName, stdoutmark))
+            dstDir = UTIL_openParentDir(dstFileName, srcDir, srcFileName);
+        dstFile = FIO_openDstFile(fCtx, prefs, dstDir, srcFileName,
+                                  strcmp(srcFileName, stdinmark) ? srcFileStat : NULL,
+                                  dstFileName, dstFilePermissions);
+        if (dstFile==NULL) goto cleanup;
         dstFd = fileno(dstFile);
         /* identity of the file just created : on failure, remove only that one */
         if (strcmp(dstFileName, stdoutmark))
@@ -3215,7 +3261,7 @@ static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
          * Otherwise we may delete the destination file if it already exists,
          * and the user presses Ctrl-C when asked if they wish to overwrite.
          */
-        addHandler(dstFileName);
+        addHandler(dstDir, dstFileName, dstFileStatValid ? &dstFileStat : NULL);
     }
 
     result = FIO_decompressFrames(fCtx, ress, prefs, dstFileName, srcFileName);
@@ -3233,16 +3279,18 @@ static int FIO_decompressDstFile(FIO_ctx_t* const fCtx,
         }
 
         if (transferStat) {
-            UTIL_utime(dstFileName, srcFileStat);
+            UTIL_utimeInDir(dstDir, dstFileName, srcFileStat);
         }
 
         if ( (result != 0)  /* operation failure */
           && strcmp(dstFileName, stdoutmark)  /* special case : don't remove() stdout */
           && dstFileStatValid ) {
-            FIO_removeFile(dstFileName, &dstFileStat);  /* remove decompression artefact; note: don't do anything special if remove() fails */
+            FIO_removeFile(dstDir, dstFileName, &dstFileStat);  /* remove decompression artefact; note: don't do anything special if remove() fails */
         }
     }
 
+cleanup:
+    UTIL_closeParentDir(dstDir, srcDir);
     return result;
 }
 
@@ -3256,7 +3304,8 @@ static int FIO_decompressSrcFile(FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs
 {
     FILE* srcFile;
     stat_t srcFileStat;
-    int result;
+    int srcDir = -1;
+    int result = 1;
     U64 fileSize = UTIL_FILESIZE_UNKNOWN;
 
     if (UTIL_isDirectory(srcFileName)) {
@@ -3264,8 +3313,10 @@ static int FIO_decompressSrcFile(FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs
         return 1;
     }
 
-    srcFile = FIO_openSrcFile(prefs, srcFileName, &srcFileStat);
-    if (srcFile==NULL) return 1;
+    if (strcmp(srcFileName, stdinmark))
+        srcDir = UTIL_openParentDir(srcFileName, -1, NULL);
+    srcFile = FIO_openSrcFile(prefs, srcDir, srcFileName, &srcFileStat);
+    if (srcFile==NULL) goto cleanup;
 
     /* Don't use AsyncIO for small files */
     if (strcmp(srcFileName, stdinmark)) /* Stdin doesn't have stats */
@@ -3280,14 +3331,15 @@ static int FIO_decompressSrcFile(FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs
 
     AIO_ReadPool_setFile(ress.readCtx, srcFile);
 
-    result = FIO_decompressDstFile(fCtx, prefs, ress, dstFileName, srcFileName, &srcFileStat);
+    result = FIO_decompressDstFile(fCtx, prefs, ress, srcDir, dstFileName, srcFileName, &srcFileStat);
 
     AIO_ReadPool_setFile(ress.readCtx, NULL);
 
     /* Close file */
     if (fclose(srcFile)) {
         DISPLAYLEVEL(1, "zstd: %s: %s \n", srcFileName, strerror(errno));  /* error should not happen */
-        return 1;
+        result = 1;
+        goto cleanup;
     }
     if ( prefs->removeSrcFile  /* --rm */
       && (result==0)      /* decompression successful */
@@ -3296,11 +3348,13 @@ static int FIO_decompressSrcFile(FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs
          * delete both the source and destination files.
          */
         clearHandler();
-        if (FIO_removeFile(srcFileName, &srcFileStat)) {
+        if (FIO_removeFile(srcDir, srcFileName, &srcFileStat)) {
             /* failed to remove src file */
             DISPLAYLEVEL(1, "zstd: %s: %s \n", srcFileName, strerror(errno));
-            return 1;
+            result = 1;
     }   }
+cleanup:
+    UTIL_closeParentDir(srcDir, -1);
     return result;
 }
 
@@ -3498,7 +3552,10 @@ FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
             return 1;
         }
         if (!prefs->testMode) {
-            FILE* dstFile = FIO_openDstFile(fCtx, prefs, NULL, outFileName, DEFAULT_FILE_PERMISSIONS);
+            int const dstDir = strcmp(outFileName, stdoutmark)
+                             ? UTIL_openParentDir(outFileName, -1, NULL) : -1;
+            FILE* dstFile = FIO_openDstFile(fCtx, prefs, dstDir, NULL, NULL, outFileName, DEFAULT_FILE_PERMISSIONS);
+            UTIL_closeParentDir(dstDir, -1);
             if (dstFile == 0) EXM_THROW(19, "cannot open %s", outFileName);
             AIO_WritePool_setFile(ress.writeCtx, dstFile);
         }
@@ -3698,7 +3755,7 @@ getFileInfo_fileConfirmed(fileInfo_t* info, const char* inFileName)
 {
     InfoError status;
     stat_t srcFileStat;
-    FILE* const srcFile = FIO_openSrcFile(NULL, inFileName, &srcFileStat);
+    FILE* const srcFile = FIO_openSrcFile(NULL, -1, inFileName, &srcFileStat);
     ERROR_IF(srcFile == NULL, info_file_error, "Error: could not open source file %s", inFileName);
 
     info->compressedSize = UTIL_getFileSizeStat(&srcFileStat);
