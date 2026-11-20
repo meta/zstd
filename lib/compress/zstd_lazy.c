@@ -908,13 +908,12 @@ void ZSTD_row_update_internalImpl(ZSTD_MatchState_t* ms,
         U32 const hash = useCache ? ZSTD_row_nextCachedHash(hashCache, hashTable, tagTable, base, updateStartIdx, hashLog, rowLog, mls, hashSalt)
                                   : (U32)ZSTD_hashPtrSalted(base + updateStartIdx, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, hashSalt);
         size_t const relRow = (size_t)(hash >> ZSTD_ROW_HASH_TAG_BITS) << rowLog;
-        U32* const row = hashTable + relRow;
-        BYTE* tagRow = tagTable + relRow;
-        size_t const pos = ZSTD_row_nextIndex(tagRow, rowMask);
+        /* index of the new entry, shared by the tag and hash stores */
+        size_t const entry = relRow + ZSTD_row_nextIndex(tagTable + relRow, rowMask);
 
         assert(hash == ZSTD_hashPtrSalted(base + updateStartIdx, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, hashSalt));
-        tagRow[pos] = hash & ZSTD_ROW_HASH_TAG_MASK;
-        row[pos] = updateStartIdx;
+        tagTable[entry] = hash & ZSTD_ROW_HASH_TAG_MASK;
+        hashTable[entry] = updateStartIdx;
     }
 }
 
