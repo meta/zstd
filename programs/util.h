@@ -126,6 +126,54 @@ int UTIL_requireUserConfirmation(const char* prompt, const char* abortMsg, const
 #endif
 
 
+/*-****************************************
+*  UTF-8 file names
+*
+*  Windows narrow-character file APIs interpret names using the active ANSI code page,
+*  which cannot represent every Unicode file name.
+*  On Windows, zstd therefore handles all file names as UTF-8 internally,
+*  and converts them to UTF-16 at the boundary with the OS
+*  (command line, file access, directory listing, console output).
+*  On other platforms, these are thin wrappers over the standard functions.
+******************************************/
+#if defined(_WIN32)
+
+/* Converts between UTF-8 and UTF-16, like strdup().
+ * @return : a buffer to release with free(), or NULL on error. */
+WCHAR* UTIL_utf8ToUtf16(const char* str);
+char* UTIL_utf16ToUtf8(const WCHAR* str);
+
+/* Converts a UTF-16 argv into a NULL-terminated UTF-8 argv.
+ * @return : an array to release with UTIL_freeUtf8Argv(), or NULL on error. */
+char** UTIL_utf8ArgvFromUtf16(int argc, WCHAR** argv);
+void UTIL_freeUtf8Argv(int argc, char** argv);
+
+/* UTF-8 versions of fopen(), _open(), remove() and fprintf().
+ * UTIL_fprintf() only converts when @stream is a console,
+ * otherwise it writes UTF-8 bytes as they are. */
+FILE* UTIL_fopen(const char* filename, const char* mode);
+int UTIL_open(const char* filename, int flags, int mode);
+int UTIL_remove(const char* filename);
+#  if defined(__GNUC__)
+#    if defined(__MINGW_PRINTF_FORMAT)
+#      define UTIL_FPRINTF_ATTRIBUTE __attribute__((format(__MINGW_PRINTF_FORMAT, 2, 3)))
+#    else
+#      define UTIL_FPRINTF_ATTRIBUTE __attribute__((format(printf, 2, 3)))
+#    endif
+#  else
+#    define UTIL_FPRINTF_ATTRIBUTE
+#  endif
+int UTIL_fprintf(FILE* stream, const char* format, ...) UTIL_FPRINTF_ATTRIBUTE;
+
+#else
+
+#  define UTIL_fopen(filename, mode) fopen(filename, mode)
+#  define UTIL_remove(filename) remove(filename)
+#  define UTIL_fprintf fprintf
+
+#endif
+
+
 /**
  * Calls platform's equivalent of stat() on filename and writes info to statbuf.
  * Returns success (1) or failure (0).

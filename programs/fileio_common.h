@@ -14,6 +14,7 @@
 #include "../lib/common/mem.h"     /* U32, U64 */
 #include "fileio_types.h"
 #include "platform.h"
+#include "util.h"       /* UTIL_fprintf */
 #include "timefn.h"     /* UTIL_getTime, UTIL_clockSpanMicro */
 
 /*-*************************************
@@ -29,7 +30,7 @@
 
 extern FIO_display_prefs_t g_display_prefs;
 
-#define DISPLAY_F(f, ...)    fprintf((f), __VA_ARGS__)
+#define DISPLAY_F(f, ...)    UTIL_fprintf((f), __VA_ARGS__)
 #define DISPLAYOUT(...)      DISPLAY_F(stdout, __VA_ARGS__)
 #define DISPLAY(...)         DISPLAY_F(stderr, __VA_ARGS__)
 #define DISPLAYLEVEL(l, ...) { if (g_display_prefs.displayLevel>=l) { DISPLAY(__VA_ARGS__); } }

@@ -13,6 +13,9 @@
 **************************************/
 #include "platform.h" /* PLATFORM_POSIX_VERSION */
 #include "util.h"     /* UTIL_HAS_CREATEFILELIST, UTIL_createFileList, UTIL_isConsole */
+#if defined(_WIN32) && !defined(_MSC_VER)
+#  include <shellapi.h>   /* CommandLineToArgvW */
+#endif
 #include <stdlib.h>   /* getenv */
 #include <string.h>   /* strcmp, strlen */
 #include <stdio.h>    /* fprintf(), stdin, stdout, stderr */
@@ -873,7 +876,7 @@ typedef enum { zom_compress, zom_decompress, zom_test, zom_bench, zom_train, zom
 # define MAXCLEVEL  ZSTD_maxCLevel()
 #endif
 
-int main(int argCount, const char* argv[])
+static int zstdMain(int argCount, const char* argv[])
 {
     int argNb,
         followLinks = 0,
@@ -1697,3 +1700,43 @@ _end:
 
     return operationResult;
 }
+
+
+#if defined(_WIN32)
+/* On Windows, main()'s argv is encoded in the active ANSI code page,
+ * which cannot represent every Unicode file name.
+ * Retrieve the UTF-16 command line instead, and convert it to UTF-8,
+ * which is what the rest of the program expects (see util.h).
+ * MSVC provides wmain() for this purpose.
+ * Other toolchains (MinGW) only support it with -municode,
+ * so use main() with GetCommandLineW() there. */
+#  if defined(_MSC_VER)
+int wmain(int argCount, WCHAR** wargv)
+{
+#  else
+int main(int argCount, const char** unusedArgv)
+{
+    WCHAR** const wargv = CommandLineToArgvW(GetCommandLineW(), &argCount);
+    (void)unusedArgv;
+#  endif
+    {   char** const argv = UTIL_utf8ArgvFromUtf16(argCount, wargv);
+        int ret;
+#  if !defined(_MSC_VER)
+        LocalFree(wargv);
+#  endif
+        if (argv == NULL) {
+            fprintf(stderr, "zstd: error converting command line arguments \n");
+            return 1;
+        }
+        /* zstdMain() only reads the arguments : go through void* to avoid -Wcast-qual */
+        ret = zstdMain(argCount, (const char**)(void*)argv);
+        UTIL_freeUtf8Argv(argCount, argv);
+        return ret;
+    }
+}
+#else
+int main(int argCount, const char* argv[])
+{
+    return zstdMain(argCount, argv);
+}
+#endif
