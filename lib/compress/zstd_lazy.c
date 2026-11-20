@@ -641,6 +641,8 @@ U32 ZSTD_insertAndFindFirstIndex_internal(
     const BYTE* const base = ms->window.base;
     const U32 target = (U32)(ip - base);
     U32 idx = ms->nextToUpdate;
+    size_t const hTarget = ZSTD_hashPtr(ip, hashLog, mls);
+    PREFETCH_L1(hashTable + hTarget);   /* fetch the bucket while catching up */
 
     while(idx < target) { /* catch up */
         size_t const h = ZSTD_hashPtr(base+idx, hashLog, mls);
@@ -653,7 +655,7 @@ U32 ZSTD_insertAndFindFirstIndex_internal(
     }
 
     ms->nextToUpdate = target;
-    return hashTable[ZSTD_hashPtr(ip, hashLog, mls)];
+    return hashTable[hTarget];
 }
 
 U32 ZSTD_insertAndFindFirstIndex(ZSTD_MatchState_t* ms, const BYTE* ip) {
