@@ -7130,6 +7130,7 @@ size_t ZSTD_compressSequences(ZSTD_CCtx* cctx,
     /* Begin writing output, starting with frame header */
     {   size_t const frameHeaderSize = ZSTD_writeFrameHeader(op, dstCapacity,
                     &cctx->appliedParams, srcSize, cctx->dictID);
+        FORWARD_IF_ERROR(frameHeaderSize, "ZSTD_writeFrameHeader failed");
         op += frameHeaderSize;
         assert(frameHeaderSize <= dstCapacity);
         dstCapacity -= frameHeaderSize;
@@ -8170,6 +8171,7 @@ ZSTD_compressSequencesAndLiterals(ZSTD_CCtx* cctx,
     /* Begin writing output, starting with frame header */
     {   size_t const frameHeaderSize = ZSTD_writeFrameHeader(op, dstCapacity,
                     &cctx->appliedParams, decompressedSize, cctx->dictID);
+        FORWARD_IF_ERROR(frameHeaderSize, "ZSTD_writeFrameHeader failed");
         op += frameHeaderSize;
         assert(frameHeaderSize <= dstCapacity);
         dstCapacity -= frameHeaderSize;
