@@ -9,7 +9,7 @@ set -e
 zstd --version | grep -Fq '(64-bit)' || exit 0
 
 ${CC:-cc} -Wall -Wextra -Werror -shared -fPIC \
-    "$COMMON/rm-parent-race.c" -ldl -o rm-parent-race.so
+    "$COMMON/parent-race.c" -ldl -o parent-race.so
 
 # A truncated frame : decompression fails after work/victim was created,
 # so zstd removes that partial output.
@@ -22,18 +22,18 @@ cp protected/victim sentinel
 
 # fclose() on work/victim (the output) swaps work/ for a symlink to
 # protected/ before the failed run removes its partial output.
-if LD_PRELOAD="$PWD/rm-parent-race.so" \
-    ZSTD_TEST_RM_RACE_TARGET="work/victim" \
-    ZSTD_TEST_RM_RACE_PARENT="work" \
-    ZSTD_TEST_RM_RACE_SAVED="held" \
-    ZSTD_TEST_RM_RACE_REPLACEMENT="$PWD/protected" \
+if LD_PRELOAD="$PWD/parent-race.so" \
+    ZSTD_TEST_PARENT_RACE_TARGET="work/victim" \
+    ZSTD_TEST_PARENT_RACE_PARENT="work" \
+    ZSTD_TEST_PARENT_RACE_SAVED="held" \
+    ZSTD_TEST_PARENT_RACE_REPLACEMENT="$PWD/protected" \
     zstd -q -d work/victim.zst 2> stderr; then
     die 'decompressing a truncated frame should fail'
 fi
 
-grep -Fxq 'rm-parent-race: changed parent' stderr
+grep -Fxq 'parent-race: changed parent on close' stderr
 [ -L work ] || die 'output parent was not replaced'
-# Unfixed code deletes the protected file here; fixed code refuses.
+# Re-resolving the output pathname would delete the protected file.
 cmp sentinel protected/victim
-# The partial output itself is left in place.
-[ -f held/victim ] || die 'partial output disappeared'
+# The partial output was removed, from the directory it was created in.
+[ ! -e held/victim ] || die 'partial output was left behind'
