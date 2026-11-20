@@ -1599,9 +1599,9 @@ typedef enum { search_hashChain=0, search_binaryTree=1, search_rowHash=2 } searc
  * @param rowLog The row log (if applicable), in the range [4, 6].
  * @param searchMethod The search method to use (templated).
  * @param dictMode The dictMode (templated).
- * @param inlineRowSearch If set (templated), the row search is inlined instead of
- *        dispatched to its outlined function. @p mls and @p rowLog must then be
- *        templated too.
+ * @param inlineSearch If set (templated), the row or hash-chain search is inlined
+ *        instead of dispatched to its outlined function. @p mls (and @p rowLog
+ *        for the row search) must then be templated too.
  *
  * @returns The length of the longest match found, or < mls if no match is found.
  * If a match is found its offset is stored in @p offsetPtr.
@@ -1615,11 +1615,13 @@ FORCE_INLINE_TEMPLATE size_t ZSTD_searchMax(
     U32 const rowLog,
     searchMethod_e const searchMethod,
     ZSTD_dictMode_e const dictMode,
-    int const inlineRowSearch)
+    int const inlineSearch)
 {
-    if (inlineRowSearch) {
-        assert(searchMethod == search_rowHash);
-        return ZSTD_RowFindBestMatch(ms, ip, iend, offsetPtr, mls, dictMode, rowLog);
+    if (inlineSearch) {
+        if (searchMethod == search_rowHash)
+            return ZSTD_RowFindBestMatch(ms, ip, iend, offsetPtr, mls, dictMode, rowLog);
+        assert(searchMethod == search_hashChain);
+        return ZSTD_HcFindBestMatch(ms, ip, iend, offsetPtr, mls, dictMode);
     }
     if (dictMode == ZSTD_noDict) {
         ZSTD_SWITCH_SEARCH_METHOD(noDict)
@@ -1640,7 +1642,7 @@ FORCE_INLINE_TEMPLATE size_t ZSTD_searchMax(
 
 /* ZSTD_compressBlock_lazy_specialized():
  * The lazy parser, templated on (searchMethod, depth, dictMode). (mls, rowLog) must match
- * ms->cParams; they are templated too when inlineRowSearch is set (see ZSTD_searchMax()).
+ * ms->cParams; they are templated too when inlineSearch is set (see ZSTD_searchMax()).
  */
 FORCE_INLINE_TEMPLATE
 ZSTD_ALLOW_POINTER_OVERFLOW_ATTR
@@ -1650,7 +1652,7 @@ size_t ZSTD_compressBlock_lazy_specialized(
                         const void* src, size_t srcSize,
                         const searchMethod_e searchMethod, const U32 depth,
                         ZSTD_dictMode_e const dictMode,
-                        const U32 mls, const U32 rowLog, const int inlineRowSearch)
+                        const U32 mls, const U32 rowLog, const int inlineSearch)
 {
     const BYTE* const istart = (const BYTE*)src;
     const BYTE* ip = istart;
@@ -1737,7 +1739,7 @@ size_t ZSTD_compressBlock_lazy_specialized(
 
         /* first search (depth 0) */
         {   size_t offbaseFound = 999999999;
-            size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &offbaseFound, mls, rowLog, searchMethod, dictMode, inlineRowSearch);
+            size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &offbaseFound, mls, rowLog, searchMethod, dictMode, inlineSearch);
             if (ml2 > matchLength)
                 matchLength = ml2, start = ip, offBase = offbaseFound;
         }
@@ -1785,7 +1787,7 @@ size_t ZSTD_compressBlock_lazy_specialized(
                 }
             }
             {   size_t ofbCandidate=999999999;
-                size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode, inlineRowSearch);
+                size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode, inlineSearch);
                 int const gain2 = (int)(ml2*4 - ZSTD_highbit32((U32)ofbCandidate));   /* raw approx */
                 int const gain1 = (int)(matchLength*4 - ZSTD_highbit32((U32)offBase) + 4);
                 if ((ml2 >= 4) && (gain2 > gain1)) {
@@ -1821,7 +1823,7 @@ size_t ZSTD_compressBlock_lazy_specialized(
                     }
                 }
                 {   size_t ofbCandidate=999999999;
-                    size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode, inlineRowSearch);
+                    size_t const ml2 = ZSTD_searchMax(ms, ip, iend, &ofbCandidate, mls, rowLog, searchMethod, dictMode, inlineSearch);
                     int const gain2 = (int)(ml2*4 - ZSTD_highbit32((U32)ofbCandidate));   /* raw approx */
                     int const gain1 = (int)(matchLength*4 - ZSTD_highbit32((U32)offBase) + 7);
                     if ((ml2 >= 4) && (gain2 > gain1)) {
@@ -1924,7 +1926,7 @@ size_t ZSTD_compressBlock_lazy_generic(
     return ZSTD_compressBlock_lazy_specialized(ms, seqStore, rep, src, srcSize, searchMethod, depth, dictMode,
                                                BOUNDED(4, ms->cParams.minMatch, 6),
                                                BOUNDED(4, ms->cParams.searchLog, 6),
-                                               0 /* inlineRowSearch */);
+                                               0 /* inlineSearch */);
 }
 #endif /* build exclusions */
 
@@ -1965,7 +1967,7 @@ size_t ZSTD_compressBlock_greedy_dedicatedDictSearch(
             void const* src, size_t srcSize)                                                   \
     {                                                                                          \
         return ZSTD_compressBlock_lazy_specialized(ms, seqStore, rep, src, srcSize,            \
-                search_rowHash, 0, ZSTD_noDict, mls, rowLog, 1 /* inlineRowSearch */);         \
+                search_rowHash, 0, ZSTD_noDict, mls, rowLog, 1 /* inlineSearch */);            \
     }
 
 ZSTD_GEN_GREEDY_ROW_FN(4, 4)
@@ -2003,10 +2005,22 @@ size_t ZSTD_compressBlock_greedy_dedicatedDictSearch_row(
 #endif
 
 #ifndef ZSTD_EXCLUDE_LAZY_BLOCK_COMPRESSOR
+/* The no-dictionary lazy hash-chain parser is the default parser of level 5 for
+ * sources <= 16 KB, where it runs with mls == 4. That variant inlines the
+ * hash-chain search into the parser loop, avoiding a function call per search. */
+FORCE_NOINLINE size_t ZSTD_compressBlock_lazy_4(
+        ZSTD_MatchState_t* ms, SeqStore_t* seqStore, U32 rep[ZSTD_REP_NUM],
+        void const* src, size_t srcSize)
+{
+    return ZSTD_compressBlock_lazy_specialized(ms, seqStore, rep, src, srcSize,
+            search_hashChain, 1, ZSTD_noDict, 4, BOUNDED(4, ms->cParams.searchLog, 6), 1 /* inlineSearch */);
+}
+
 size_t ZSTD_compressBlock_lazy(
         ZSTD_MatchState_t* ms, SeqStore_t* seqStore, U32 rep[ZSTD_REP_NUM],
         void const* src, size_t srcSize)
 {
+    if (BOUNDED(4, ms->cParams.minMatch, 6) == 4) return ZSTD_compressBlock_lazy_4(ms, seqStore, rep, src, srcSize);
     return ZSTD_compressBlock_lazy_generic(ms, seqStore, rep, src, srcSize, search_hashChain, 1, ZSTD_noDict);
 }
 
