@@ -12,6 +12,7 @@
  #define ZSTDMT_COMPRESS_H
 
 /* ===   Dependencies   === */
+#include "../common/compiler.h"    /* MEM_STATIC */
 #include "../common/zstd_deps.h"   /* size_t */
 #define ZSTD_STATIC_LINKING_ONLY   /* ZSTD_parameters */
 #include "../zstd.h"            /* ZSTD_inBuffer, ZSTD_outBuffer, ZSTDLIB_API */
@@ -40,6 +41,22 @@
  * ===  Private interface, for use by ZSTD_compress.c   ===
  * ===  Not exposed in libzstd. Never invoke directly   ===
  * ======================================================== */
+
+typedef struct {
+    void const* start;
+    size_t size;
+} ZSTDMT_Range;
+
+/* Select the oldest input-ring range used by an unfinished job. */
+MEM_STATIC ZSTDMT_Range ZSTDMT_getJobInputRange(ZSTDMT_Range prefix,
+                                               ZSTDMT_Range src,
+                                               unsigned firstJob)
+{
+    /* The first job's prefix may be an external raw dictionary, which does
+     * not protect its source in the ring. Later prefixes are in the ring,
+     * immediately before the source, so protecting them also protects it. */
+    return firstJob || prefix.size == 0 ? src : prefix;
+}
 
 /* ===   Memory management   === */
 typedef struct ZSTDMT_CCtx_s ZSTDMT_CCtx;
