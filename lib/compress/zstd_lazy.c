@@ -836,6 +836,22 @@ FORCE_INLINE_TEMPLATE void ZSTD_row_prefetch(U32 const* hashTable, BYTE const* t
     assert(ZSTD_isAligned(tagTable + relRow, (size_t)1 << rowLog)); /* prefetched tagRow sits on correct multiple of bytes (32,64,128) */
 }
 
+/* ZSTD_row_prefetchHash():
+ * Same as ZSTD_row_prefetch() for the rows of @hash. A prefetch only needs an
+ * address within the right cache line, so the rows of 16 entries (a 64-byte hash
+ * row and a 16-byte tag row, both aligned) are addressed with a single shift
+ * each: the tag bits it leaves below the row offset stay within the row. */
+FORCE_INLINE_TEMPLATE void ZSTD_row_prefetchHash(U32 const* hashTable, BYTE const* tagTable, U32 const hash, U32 const rowLog)
+{
+    if (rowLog == 4) {
+        assert(ZSTD_isAligned(hashTable, 64));
+        PREFETCH_L1(tagTable + (hash >> (ZSTD_ROW_HASH_TAG_BITS - 4)));
+        PREFETCH_L1((BYTE const*)hashTable + (hash >> (ZSTD_ROW_HASH_TAG_BITS - 6)));
+    } else {
+        ZSTD_row_prefetch(hashTable, tagTable, (hash >> ZSTD_ROW_HASH_TAG_BITS) << rowLog, rowLog);
+    }
+}
+
 /* ZSTD_row_fillHashCache():
  * Fill up the hash cache starting at idx, prefetching up to ZSTD_ROW_HASH_CACHE_SIZE entries,
  * but not beyond iLimit.
@@ -854,8 +870,7 @@ void ZSTD_row_fillHashCache(ZSTD_MatchState_t* ms, const BYTE* base,
 
     for (; idx < lim; ++idx) {
         U32 const hash = (U32)ZSTD_hashPtrSalted(base + idx, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, ms->hashSalt);
-        U32 const row = (hash >> ZSTD_ROW_HASH_TAG_BITS) << rowLog;
-        ZSTD_row_prefetch(hashTable, tagTable, row, rowLog);
+        ZSTD_row_prefetchHash(hashTable, tagTable, hash, rowLog);
         ms->hashCache[idx & ZSTD_ROW_HASH_CACHE_MASK] = hash;
     }
 
@@ -877,8 +892,7 @@ U32 ZSTD_row_nextCachedHash(U32* cache, U32 const* hashTable,
                                                   U64 const hashSalt)
 {
     U32 const newHash = (U32)ZSTD_hashPtrSalted(base+idx+ZSTD_ROW_HASH_CACHE_SIZE, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, hashSalt);
-    U32 const row = (newHash >> ZSTD_ROW_HASH_TAG_BITS) << rowLog;
-    ZSTD_row_prefetch(hashTable, tagTable, row, rowLog);
+    ZSTD_row_prefetchHash(hashTable, tagTable, newHash, rowLog);
     {   U32 const hash = cache[idx & ZSTD_ROW_HASH_CACHE_MASK];
         cache[idx & ZSTD_ROW_HASH_CACHE_MASK] = newHash;
         return hash;
