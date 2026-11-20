@@ -880,18 +880,18 @@ void ZSTD_row_fillHashCache(ZSTD_MatchState_t* ms, const BYTE* base,
 }
 
 /* ZSTD_row_nextCachedHash():
- * Returns the hash of base + idx, and replaces the hash in the hash cache with the byte at
- * base + idx + ZSTD_ROW_HASH_CACHE_SIZE. Also prefetches the appropriate rows from hashTable and tagTable.
+ * Returns the hash of position idx (at ip), and replaces the hash in the hash cache with the byte at
+ * ip + ZSTD_ROW_HASH_CACHE_SIZE. Also prefetches the appropriate rows from hashTable and tagTable.
  */
 FORCE_INLINE_TEMPLATE
 ZSTD_ALLOW_POINTER_OVERFLOW_ATTR
 U32 ZSTD_row_nextCachedHash(U32* cache, U32 const* hashTable,
-                                                  BYTE const* tagTable, BYTE const* base,
+                                                  BYTE const* tagTable, BYTE const* ip,
                                                   U32 idx, U32 const hashLog,
                                                   U32 const rowLog, U32 const mls,
                                                   U64 const hashSalt)
 {
-    U32 const newHash = (U32)ZSTD_hashPtrSalted(base+idx+ZSTD_ROW_HASH_CACHE_SIZE, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, hashSalt);
+    U32 const newHash = (U32)ZSTD_hashPtrSalted(ip+ZSTD_ROW_HASH_CACHE_SIZE, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, hashSalt);
     ZSTD_row_prefetchHash(hashTable, tagTable, newHash, rowLog);
     {   U32 const hash = cache[idx & ZSTD_ROW_HASH_CACHE_MASK];
         cache[idx & ZSTD_ROW_HASH_CACHE_MASK] = newHash;
@@ -919,7 +919,7 @@ void ZSTD_row_update_internalImpl(ZSTD_MatchState_t* ms,
 
     DEBUGLOG(6, "ZSTD_row_update_internalImpl(): updateStartIdx=%u, updateEndIdx=%u", updateStartIdx, updateEndIdx);
     for (; updateStartIdx < updateEndIdx; ++updateStartIdx) {
-        U32 const hash = useCache ? ZSTD_row_nextCachedHash(hashCache, hashTable, tagTable, base, updateStartIdx, hashLog, rowLog, mls, hashSalt)
+        U32 const hash = useCache ? ZSTD_row_nextCachedHash(hashCache, hashTable, tagTable, base + updateStartIdx, updateStartIdx, hashLog, rowLog, mls, hashSalt)
                                   : (U32)ZSTD_hashPtrSalted(base + updateStartIdx, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, hashSalt);
         size_t const relRow = (size_t)(hash >> ZSTD_ROW_HASH_TAG_BITS) << rowLog;
         /* index of the new entry, shared by the tag and hash stores */
@@ -932,8 +932,8 @@ void ZSTD_row_update_internalImpl(ZSTD_MatchState_t* ms,
 }
 
 /* ZSTD_row_update_internal():
- * Inserts the byte at ip into the appropriate position in the hash table, and updates ms->nextToUpdate.
- * Skips sections of long matches as is necessary.
+ * Inserts the positions from ms->nextToUpdate up to (not including) ip into the hash table.
+ * Skips sections of long matches as is necessary. The caller updates ms->nextToUpdate.
  */
 FORCE_INLINE_TEMPLATE
 ZSTD_ALLOW_POINTER_OVERFLOW_ATTR
@@ -963,7 +963,6 @@ void ZSTD_row_update_internal(ZSTD_MatchState_t* ms, const BYTE* ip,
     }
     assert(target >= idx);
     ZSTD_row_update_internalImpl(ms, idx, target, mls, rowLog, rowMask, useCache);
-    ms->nextToUpdate = target;
 }
 
 /* ZSTD_row_update():
@@ -977,6 +976,7 @@ void ZSTD_row_update(ZSTD_MatchState_t* const ms, const BYTE* ip) {
 
     DEBUGLOG(5, "ZSTD_row_update(), rowLog=%u", rowLog);
     ZSTD_row_update_internal(ms, ip, mls, rowLog, rowMask, 0 /* don't use cache */);
+    ms->nextToUpdate = (U32)(ip - ms->window.base);
 }
 
 /* Returns the mask width of bits group of which will be set to 1. Given not all
@@ -1287,16 +1287,16 @@ size_t ZSTD_RowFindBestMatch(
         ZSTD_row_prefetch(dmsHashTable, dmsTagTable, dmsRelRow, rowLog);
     }
 
-    /* Update the hashTable and tagTable up to (but not including) ip */
+    /* Update the hashTable and tagTable up to (but not including) ip.
+     * ip itself is inserted below, and ms->nextToUpdate set past it. */
     if (!ms->lazySkipping) {
         ZSTD_row_update_internal(ms, ip, mls, rowLog, rowMask, 1 /* useCache */);
-        hash = ZSTD_row_nextCachedHash(hashCache, hashTable, tagTable, base, curr, hashLog, rowLog, mls, hashSalt);
+        hash = ZSTD_row_nextCachedHash(hashCache, hashTable, tagTable, ip, curr, hashLog, rowLog, mls, hashSalt);
     } else {
         /* Stop inserting every position when in the lazy skipping mode.
          * The hash cache is also not kept up to date in this mode.
          */
         hash = (U32)ZSTD_hashPtrSalted(ip, hashLog + ZSTD_ROW_HASH_TAG_BITS, mls, hashSalt);
-        ms->nextToUpdate = curr;
     }
     ms->hashSaltEntropy += hash; /* collect salt entropy */
 
@@ -1345,7 +1345,8 @@ size_t ZSTD_RowFindBestMatch(
             /* nothing above wrote to tagRow, so the head is still the one the mask was built from */
             size_t const pos = ZSTD_row_nextIndexFromHead(tagRow, head, rowMask);
             tagRow[pos] = (BYTE)tag;
-            row[pos] = ms->nextToUpdate++;
+            row[pos] = curr;
+            ms->nextToUpdate = curr + 1;
         }
 
         /* Return the longest match */
