@@ -48,6 +48,7 @@
 #include "pool.h"         /* POOL_sizeof */
 #include "compress/hist.h" /* HIST_count_wksp */
 #include "compress/zstd_compress_internal.h" /* ZSTD_get1BlockSummary */
+#include "compress/zstd_ldm.h" /* LDM rolling hash */
 #include "decompress/zstd_decompress_internal.h" /* ZSTD_DCtx */
 #include "decompress/zstd_ddict.h" /* empty DDict storage invariants */
 #include "bitstream.h"    /* BIT_reloadDStream boundary tests */
@@ -3654,6 +3655,34 @@ static void test_decoderPointerBoundaries(unsigned tnb)
     DISPLAYLEVEL(3, "OK \n");
 }
 
+static void test_ldmGearReset(unsigned testNb)
+{
+    static const size_t lengths[] = { 0, 1, 3, 4, 5, 63, 64, 65 };
+    BYTE data[65];
+    size_t i;
+
+    DISPLAYLEVEL(3, "test%3u : LDM gear reset matches feed : ", testNb);
+    for (i = 0; i < sizeof(data); ++i) data[i] = (BYTE)(i * 17 + 31);
+    for (i = 0; i < COUNTOF(lengths); ++i) {
+        /* A zero mask records every byte, including a full split batch. */
+        ldmRollingHashState_t reset = { 0x12345678, 0 };
+        ldmRollingHashState_t fed = reset;
+        size_t pos = 0;
+        ZSTD_ldm_gear_reset(&reset, data, lengths[i]);
+        while (pos < lengths[i]) {
+            size_t splits[LDM_BATCH_SIZE];
+            unsigned numSplits = 0;
+            size_t const consumed = ZSTD_ldm_gear_feed(
+                    &fed, data + pos, lengths[i] - pos, splits, &numSplits);
+            CHECK(consumed > 0 && consumed <= lengths[i] - pos);
+            pos += consumed;
+        }
+        CHECK_EQ(reset.rolling, fed.rolling);
+        CHECK_EQ(reset.stopMask, fed.stopMask);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+}
+
 static int basicUnitTests(U32 const seed, double compressibility)
 {
     size_t const CNBuffSize = 5 MB;
@@ -3674,6 +3703,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
     RDG_genBuffer(CNBuffer, CNBuffSize, compressibility, 0., seed);
 
     /* Basic tests */
+    test_ldmGearReset(testNb++);
     DISPLAYLEVEL(3, "test%3u : ZSTD_getErrorName : ", testNb++);
     {   const char* errorString = ZSTD_getErrorName(0);
         DISPLAYLEVEL(3, "OK : %s \n", errorString);
