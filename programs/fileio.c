@@ -65,7 +65,6 @@ UTIL_time_t g_displayClock = UTIL_TIME_INITIALIZER;
 
 #define LZ4_MAGICNUMBER 0x184D2204
 #if defined(ZSTD_LZ4COMPRESS) || defined(ZSTD_LZ4DECOMPRESS)
-#  define LZ4F_ENABLE_OBSOLETE_ENUMS
 #  include <lz4frame.h>
 #  include <lz4.h>
 #endif
@@ -1721,6 +1720,7 @@ FIO_compressLzmaFrame(cRess_t* ress,
 
 #if LZ4_VERSION_NUMBER <= 10600
 #define LZ4F_blockLinked blockLinked
+#define LZ4F_contentChecksum_t contentChecksum_t
 #define LZ4F_max64KB max64KB
 #endif
 
