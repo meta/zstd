@@ -1629,12 +1629,12 @@ FIO_compressGzFrame(cRess_t* ress,
             DISPLAYUPDATE_PROGRESS(
                     "\rRead : %u MB ==> %.2f%% ",
                     (unsigned)(inFileSize>>20),
-                    (double)outFileSize/(double)inFileSize*100)
+                    inFileSize ? (double)outFileSize/(double)inFileSize*100 : 0)
         } else {
             DISPLAYUPDATE_PROGRESS(
                     "\rRead : %u / %u MB ==> %.2f%% ",
                     (unsigned)(inFileSize>>20), (unsigned)(srcFileSize>>20),
-                    (double)outFileSize/(double)inFileSize*100);
+                    inFileSize ? (double)outFileSize/(double)inFileSize*100 : 0);
     }   }
 
     while (1) {
@@ -1723,11 +1723,11 @@ FIO_compressLzmaFrame(cRess_t* ress,
         if (srcFileSize == UTIL_FILESIZE_UNKNOWN)
             DISPLAYUPDATE_PROGRESS("\rRead : %u MB ==> %.2f%%",
                             (unsigned)(inFileSize>>20),
-                            (double)outFileSize/(double)inFileSize*100)
+                            inFileSize ? (double)outFileSize/(double)inFileSize*100 : 0)
         else
             DISPLAYUPDATE_PROGRESS("\rRead : %u / %u MB ==> %.2f%%",
                             (unsigned)(inFileSize>>20), (unsigned)(srcFileSize>>20),
-                            (double)outFileSize/(double)inFileSize*100);
+                            inFileSize ? (double)outFileSize/(double)inFileSize*100 : 0);
         if (ret == LZMA_STREAM_END) break;
     }
 
@@ -1807,11 +1807,11 @@ FIO_compressLz4Frame(cRess_t* ress,
             if (srcFileSize == UTIL_FILESIZE_UNKNOWN) {
                 DISPLAYUPDATE_PROGRESS("\rRead : %u MB ==> %.2f%%",
                                 (unsigned)(inFileSize>>20),
-                                (double)outFileSize/(double)inFileSize*100)
+                                inFileSize ? (double)outFileSize/(double)inFileSize*100 : 0)
             } else {
                 DISPLAYUPDATE_PROGRESS("\rRead : %u / %u MB ==> %.2f%%",
                                 (unsigned)(inFileSize>>20), (unsigned)(srcFileSize>>20),
-                                (double)outFileSize/(double)inFileSize*100);
+                                inFileSize ? (double)outFileSize/(double)inFileSize*100 : 0);
             }
 
             FIO_SyncCompressIO_commitOut(syncIO, syncIO->outBuffer, outSize);
