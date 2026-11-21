@@ -50,3 +50,21 @@ for source in reject-in/file*; do
     cmp payload "$source"
     [ "$(cat "reject-out/$name.zst")" = 'existing output' ] || die 'rejected output was modified'
 done
+
+# Recursive expansion must not retain one descriptor per input directory.
+mkdir recursive
+i=1
+while [ "$i" -le 64 ]; do
+    name=$(printf 'dir%03d' "$i")
+    mkdir "recursive/$name"
+    cp payload "recursive/$name/job"
+    i=$((i + 1))
+done
+zstd -qr --rm recursive
+zstd -qtr recursive
+zstd -qlr recursive > recursive.list
+zstd -dqr --rm recursive
+for source in recursive/*/job; do
+    cmp payload "$source"
+    [ ! -e "$source.zst" ] || die 'recursive source remained after decompression'
+done
