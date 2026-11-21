@@ -16,7 +16,7 @@ Distribution of this document is unlimited.
 
 ### Version
 
-0.4.5 (2026-05-14)
+0.4.6 (2026-11-15)
 
 
 Introduction
@@ -1453,16 +1453,16 @@ it would be encoded (in reverse order) as:
 
 |Symbol  |   F  |   E  |  B | A | Padding |
 |--------|------|------|----|---|---------|
-|Encoding|`0000`|`0001`|`01`|`1`| `00001` |
+|Encoding|`0001`|`0000`|`01`|`1`| `00001` |
 
 Resulting in following 2-bytes bitstream :
 ```
-00010000 00001101
+00000001 00001101
 ```
 
 Here is an alternative representation with the symbol codes separated by underscore:
 ```
-0001_0000 00001_1_01
+0000_0001 00001_1_01
 ```
 
 Reading highest `Max_Number_of_Bits` bits,
@@ -1746,6 +1746,7 @@ or at least provide a meaningful error code explaining for which reason it canno
 
 Version changes
 ---------------
+- 0.4.6 : fix ABEF example in Huffman-coded Streams (swapped E/F prefix codes and resulting bytes)
 - 0.4.5 : minor clarification regarding Block_Maximum_Size
 - 0.4.4 : minor clarification for block size
 - 0.4.3 : clarifications for Huffman prefix code assignment example
