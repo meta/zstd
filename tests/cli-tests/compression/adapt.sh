@@ -7,6 +7,8 @@ zstd -f file --adapt -c | zstd -t
 
 # Out-of-range bounds are clamped to the supported levels, as with -# and --fast=#
 zstd -f file --adapt=min=-200000 -c | zstd -t
+zstd -f file --adapt=max=-200000 -c | zstd -t
+zstd -f file --adapt=min=200000 -c | zstd -t
 zstd -f file --adapt=min=-200000,max=-200000 -c | zstd -t
 zstd -f file --adapt=min=1,max=200000 -c | zstd -t
 zstd -f file --adapt=min=200000,max=200000 -c | zstd -t

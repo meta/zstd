@@ -632,15 +632,16 @@ static unsigned parseAdaptParameters(const char* stringPtr, int* adaptMinPtr, in
         return 0;
     }
     if (stringPtr[0] != 0) return 0; /* check the end of string */
-    if (*adaptMinPtr > *adaptMaxPtr) {
-        DISPLAYLEVEL(4, "incoherent adaptation limits \n");
-        return 0;
-    }
-    /* clamp to the supported range of levels, as `-#` and `--fast=#` do */
+    /* clamp to the supported range of levels, as `-#` and `--fast=#` do,
+     * before comparing the bounds, so that one bound alone is clamped too */
     if (*adaptMinPtr < MINCLEVEL) *adaptMinPtr = MINCLEVEL;
     if (*adaptMinPtr > MAXCLEVEL) *adaptMinPtr = MAXCLEVEL;
     if (*adaptMaxPtr < MINCLEVEL) *adaptMaxPtr = MINCLEVEL;
     if (*adaptMaxPtr > MAXCLEVEL) *adaptMaxPtr = MAXCLEVEL;
+    if (*adaptMinPtr > *adaptMaxPtr) {
+        DISPLAYLEVEL(4, "incoherent adaptation limits \n");
+        return 0;
+    }
     return 1;
 }
 
