@@ -16,10 +16,15 @@
  * - ZSTD_TEST_PARENT_RACE_WHEN=sigint : after the SIGINT handler is installed,
  *   then raise SIGINT ;
  * - ZSTD_TEST_PARENT_RACE_WHEN=stat : right after stat() or fstatat() checks
- *   the target, which need not exist yet. PARENT must be its direct parent.
- * The stream is matched by file identity, so it works for files opened with
- * fopen(), or with open() / openat() then fdopen(). */
+ *   the target, which need not exist yet. PARENT must be its direct parent,
+ *   unless ZSTD_TEST_PARENT_RACE_MATCH_PARENT names that directory ;
+ * - ZSTD_TEST_PARENT_RACE_WHEN=closedir : right after the target directory
+ *   is closed. PARENT may be that directory or one of its ancestors ;
+ * - ZSTD_TEST_PARENT_RACE_WHEN=opendir : right after that directory is opened.
+ * Streams and directories are matched by file identity, so this also works
+ * for files opened with open() / openat() then fdopen(). */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -33,6 +38,9 @@
 typedef FILE* (*fopen_fn)(const char*, const char*);
 typedef FILE* (*fdopen_fn)(int, const char*);
 typedef int (*fclose_fn)(FILE*);
+typedef DIR* (*opendir_fn)(const char*);
+typedef DIR* (*fdopendir_fn)(int);
+typedef int (*closedir_fn)(DIR*);
 typedef int (*stat_fn)(const char*, struct stat*);
 typedef int (*fstatat_fn)(int, const char*, struct stat*, int);
 typedef void (*signal_handler_fn)(int);
@@ -59,17 +67,16 @@ static int originalStat(const char* path, struct stat* statbuf)
     return realStat(path, statbuf);
 }
 
-static int isTarget(FILE* stream)
+static int isTargetFD(int fd)
 {
     const char* const target = getenv("ZSTD_TEST_PARENT_RACE_TARGET");
-    struct stat streamStat;
+    struct stat fdStat;
     struct stat targetStat;
-    int const fd = fileno(stream);
     return target != NULL && fd >= 0
-        && fstat(fd, &streamStat) == 0
+        && fstat(fd, &fdStat) == 0
         && originalStat(target, &targetStat) == 0
-        && streamStat.st_dev == targetStat.st_dev
-        && streamStat.st_ino == targetStat.st_ino;
+        && fdStat.st_dev == targetStat.st_dev
+        && fdStat.st_ino == targetStat.st_ino;
 }
 
 static void changeParent(const char* when)
@@ -91,10 +98,10 @@ static int swapParent(FILE* stream, const char* when)
     const char* const trigger = configuredTrigger();
     if (done) return 0;
     if (strcmp(trigger, "sigint") == 0 && strcmp(when, "open") == 0) {
-        if (isTarget(stream)) interruptStream = stream;
+        if (isTargetFD(fileno(stream))) interruptStream = stream;
         return 0;
     }
-    if (strcmp(trigger, when) != 0 || !isTarget(stream)) return 0;
+    if (strcmp(trigger, when) != 0 || !isTargetFD(fileno(stream))) return 0;
     changeParent(when);
     return 1;
 }
@@ -102,7 +109,9 @@ static int swapParent(FILE* stream, const char* when)
 static int isTargetPath(int dirfd, const char* path)
 {
     const char* const target = getenv("ZSTD_TEST_PARENT_RACE_TARGET");
-    const char* const parent = getenv("ZSTD_TEST_PARENT_RACE_PARENT");
+    const char* const matchParent = getenv("ZSTD_TEST_PARENT_RACE_MATCH_PARENT");
+    const char* const parent = matchParent != NULL ? matchParent
+                              : getenv("ZSTD_TEST_PARENT_RACE_PARENT");
     const char* base;
     struct stat dirStat;
     struct stat parentStat;
@@ -177,6 +186,68 @@ int fclose(FILE* stream)
     swapParent(stream, "close");
     if (stream == interruptStream) interruptStream = NULL;
     return realClose(stream);
+}
+
+static int isTargetDirectory(DIR* dir, const char* when)
+{
+    return dir != NULL && !done && !strcmp(configuredTrigger(), when)
+        && isTargetFD(dirfd(dir));
+}
+
+static void swapAfterOpendir(DIR* dir)
+{
+    int const savedErrno = errno;
+    if (isTargetDirectory(dir, "opendir")) changeParent("opendir");
+    errno = savedErrno;
+}
+
+DIR* opendir(const char* path)
+{
+    opendir_fn const realOpendir = (opendir_fn)dlsym(RTLD_NEXT, "opendir");
+    DIR* dir;
+    if (realOpendir == NULL) {
+        fputs("parent-race: cannot resolve opendir\n", stderr);
+        _exit(91);
+    }
+    dir = realOpendir(path);
+    swapAfterOpendir(dir);
+    return dir;
+}
+
+DIR* fdopendir(int fd)
+{
+    fdopendir_fn const realFdopendir = (fdopendir_fn)dlsym(RTLD_NEXT, "fdopendir");
+    DIR* dir;
+    if (realFdopendir == NULL) {
+        fputs("parent-race: cannot resolve fdopendir\n", stderr);
+        _exit(91);
+    }
+    dir = realFdopendir(fd);
+    swapAfterOpendir(dir);
+    return dir;
+}
+
+int closedir(DIR* dir)
+{
+    static closedir_fn realClosedir = NULL;
+    int const entryErrno = errno;
+    int shouldSwap;
+    int result;
+    int savedErrno;
+    if (realClosedir == NULL)
+        realClosedir = (closedir_fn)dlsym(RTLD_NEXT, "closedir");
+    if (realClosedir == NULL) {
+        fputs("parent-race: cannot resolve closedir\n", stderr);
+        _exit(91);
+    }
+    /* Match before closedir() invalidates the directory descriptor. */
+    shouldSwap = isTargetDirectory(dir, "closedir");
+    errno = entryErrno;
+    result = realClosedir(dir);
+    savedErrno = errno;
+    if (result == 0 && shouldSwap) changeParent("closedir");
+    errno = savedErrno;
+    return result;
 }
 
 static signal_handler_fn installHandler(const char* name, int sig,

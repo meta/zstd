@@ -514,6 +514,7 @@ struct FIO_ctx_s {
 
     /* file i/o info */
     int nbFilesTotal;
+    const UTIL_fileIdentity_t* fileIdentities;
     int hasStdinInput;
     int hasStdoutOutput;
 
@@ -590,6 +591,7 @@ FIO_ctx_t* FIO_createContext(void)
     ret->hasStdinInput = 0;
     ret->hasStdoutOutput = 0;
     ret->nbFilesTotal = 1;
+    ret->fileIdentities = NULL;
     ret->nbFilesProcessed = 0;
     ret->totalBytesInput = 0;
     ret->totalBytesOutput = 0;
@@ -766,13 +768,11 @@ void FIO_setHasStdoutOutput(FIO_ctx_t* const fCtx, int value) {
     fCtx->hasStdoutOutput = value;
 }
 
-void FIO_setNbFilesTotal(FIO_ctx_t* const fCtx, int value)
-{
-    fCtx->nbFilesTotal = value;
-}
-
-void FIO_determineHasStdinInput(FIO_ctx_t* const fCtx, const FileNamesTable* const filenames) {
+void FIO_setInputFiles(FIO_ctx_t* const fCtx, const FileNamesTable* filenames) {
     size_t i = 0;
+    fCtx->nbFilesTotal = (int)filenames->tableSize;
+    fCtx->fileIdentities = filenames->fileIdentities;
+    fCtx->hasStdinInput = 0;
     for ( ; i < filenames->tableSize; ++i) {
         if (!strcmp(stdinmark, filenames->fileNames[i])) {
             fCtx->hasStdinInput = 1;
@@ -828,9 +828,12 @@ static int FIO_removeFile(int dir, const char* path, const stat_t* expected)
  *  condition : `srcFileName` must be non-NULL.
  *  optional: `prefs` may be NULL.
  *  `dir` is the source's parent descriptor, or -1 if unbound.
+ *  `expected` is the optional identity selected during recursive expansion.
  * @result : FILE* to `srcFileName`, or NULL if it fails */
 static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, int dir,
-                             const char* srcFileName, stat_t* statbuf)
+                             const char* srcFileName,
+                             const UTIL_fileIdentity_t* expected,
+                             stat_t* statbuf)
 {
     int allowBlockDevices = prefs != NULL ? prefs->allowBlockDevices : 0;
     assert(srcFileName != NULL);
@@ -845,6 +848,11 @@ static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, int dir,
     if (!UTIL_statInDir(dir, srcFileName, statbuf)) {
         DISPLAYLEVEL(1, "zstd: can't stat %s : %s -- ignored \n",
                         srcFileName, strerror(errno));
+        return NULL;
+    }
+
+    if (!UTIL_isSameFileIdentity(expected, statbuf)) {
+        DISPLAYLEVEL(1, "zstd: %s changed while opening -- ignored\n", srcFileName);
         return NULL;
     }
 
@@ -874,7 +882,8 @@ static FILE* FIO_openSrcFile(const FIO_prefs_t* const prefs, int dir,
             }
             /* The pathname may have been replaced since UTIL_stat(). Never read
              * a different file or copy the old file's permissions to its output. */
-            if (!UTIL_isSameFileStat(srcFileName, srcFileName, statbuf, &openedStat)) {
+            if (!UTIL_isSameFileStat(srcFileName, srcFileName, statbuf, &openedStat)
+             || !UTIL_isSameFileIdentity(expected, &openedStat)) {
                 DISPLAYLEVEL(1, "zstd: %s changed while opening -- ignored\n", srcFileName);
                 fclose(f);
                 return NULL;
@@ -2422,7 +2431,9 @@ FIO_compressFilename_srcFile(FIO_ctx_t* const fCtx,
 
     if (strcmp(srcFileName, stdinmark))
         srcDir = UTIL_openParentDir(srcFileName, -1, NULL);
-    srcFile = FIO_openSrcFile(prefs, srcDir, srcFileName, &srcFileStat);
+    srcFile = FIO_openSrcFile(prefs, srcDir, srcFileName,
+                             fCtx->fileIdentities == NULL ? NULL : &fCtx->fileIdentities[fCtx->currFileIdx],
+                             &srcFileStat);
     if (srcFile == NULL) goto cleanup;
 
     FIO_SyncCompressIO_setSrc(&ress->io, srcFile);
@@ -3315,7 +3326,9 @@ static int FIO_decompressSrcFile(FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs
 
     if (strcmp(srcFileName, stdinmark))
         srcDir = UTIL_openParentDir(srcFileName, -1, NULL);
-    srcFile = FIO_openSrcFile(prefs, srcDir, srcFileName, &srcFileStat);
+    srcFile = FIO_openSrcFile(prefs, srcDir, srcFileName,
+                             fCtx->fileIdentities == NULL ? NULL : &fCtx->fileIdentities[fCtx->currFileIdx],
+                             &srcFileStat);
     if (srcFile==NULL) goto cleanup;
 
     /* Don't use AsyncIO for small files */
@@ -3751,11 +3764,12 @@ FIO_analyzeFrames(fileInfo_t* info, FILE* const srcFile)
 
 
 static InfoError
-getFileInfo_fileConfirmed(fileInfo_t* info, const char* inFileName)
+getFileInfo_fileConfirmed(fileInfo_t* info, const char* inFileName,
+                          const UTIL_fileIdentity_t* expected)
 {
     InfoError status;
     stat_t srcFileStat;
-    FILE* const srcFile = FIO_openSrcFile(NULL, -1, inFileName, &srcFileStat);
+    FILE* const srcFile = FIO_openSrcFile(NULL, -1, inFileName, expected, &srcFileStat);
     ERROR_IF(srcFile == NULL, info_file_error, "Error: could not open source file %s", inFileName);
 
     info->compressedSize = UTIL_getFileSizeStat(&srcFileStat);
@@ -3772,11 +3786,12 @@ getFileInfo_fileConfirmed(fileInfo_t* info, const char* inFileName)
  * @return : InfoError status
  */
 static InfoError
-getFileInfo(fileInfo_t* info, const char* srcFileName)
+getFileInfo(fileInfo_t* info, const char* srcFileName,
+            const UTIL_fileIdentity_t* expected)
 {
     ERROR_IF(!UTIL_isRegularFile(srcFileName),
             info_file_error, "Error : %s is not a file", srcFileName);
-    return getFileInfo_fileConfirmed(info, srcFileName);
+    return getFileInfo_fileConfirmed(info, srcFileName, expected);
 }
 
 
@@ -3850,11 +3865,12 @@ static fileInfo_t FIO_addFInfo(fileInfo_t fi1, fileInfo_t fi2)
 }
 
 static int
-FIO_listFile(fileInfo_t* total, const char* inFileName, int displayLevel)
+FIO_listFile(fileInfo_t* total, const char* inFileName,
+             const UTIL_fileIdentity_t* expected, int displayLevel)
 {
     fileInfo_t info;
     memset(&info, 0, sizeof(info));
-    {   InfoError const error = getFileInfo(&info, inFileName);
+    {   InfoError const error = getFileInfo(&info, inFileName, expected);
         switch (error) {
             case info_frame_error:
                 /* display error, but provide output */
@@ -3884,8 +3900,10 @@ FIO_listFile(fileInfo_t* total, const char* inFileName, int displayLevel)
     }
 }
 
-int FIO_listMultipleFiles(unsigned numFiles, const char** filenameTable, int displayLevel)
+int FIO_listMultipleFiles(const FileNamesTable* filenames, int displayLevel)
 {
+    unsigned const numFiles = (unsigned)filenames->tableSize;
+    const char** const filenameTable = filenames->fileNames;
     /* ensure no specified input is stdin (needs fseek() capability) */
     {   unsigned u;
         for (u=0; u<numFiles;u++) {
@@ -3911,7 +3929,9 @@ int FIO_listMultipleFiles(unsigned numFiles, const char** filenameTable, int dis
         /* --list each file, and check for any error */
         {   unsigned u;
             for (u=0; u<numFiles;u++) {
-                error |= FIO_listFile(&total, filenameTable[u], displayLevel);
+                error |= FIO_listFile(&total, filenameTable[u],
+                                      filenames->fileIdentities == NULL ? NULL : &filenames->fileIdentities[u],
+                                      displayLevel);
         }   }
         if (numFiles > 1 && displayLevel <= 2) {   /* display total */
             UTIL_HumanReadableSize_t const compressed_hrs = UTIL_makeHumanReadableSize(total.compressedSize);
