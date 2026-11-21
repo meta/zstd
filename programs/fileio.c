@@ -3631,6 +3631,7 @@ typedef struct {
     BYTE checksum[4];
     U32 nbFiles;
     unsigned dictID;
+    int multipleDictIDs;
 } fileInfo_t;
 
 typedef enum {
@@ -3685,11 +3686,14 @@ FIO_analyzeFrames(fileInfo_t* info, FILE* const srcFile)
                 }
                 ERROR_IF(ZSTD_getFrameHeader(&header, headerBuffer, numBytesRead) != 0,
                         info_frame_error, "Error: could not decode frame header");
-                if (info->dictID != 0 && info->dictID != header.dictID) {
-                    DISPLAY("WARNING: File contains multiple frames with different dictionary IDs. Showing dictID 0 instead");
-                    info->dictID = 0;
-                } else {
+                /* dictID 0 is also a valid "no dictionary" value,
+                 * so a mismatch must be tracked separately to remain sticky */
+                if (info->numActualFrames == 0) {
                     info->dictID = header.dictID;
+                } else if (!info->multipleDictIDs && info->dictID != header.dictID) {
+                    DISPLAY("WARNING: File contains multiple frames with different dictionary IDs. Showing dictID 0 instead\n");
+                    info->multipleDictIDs = 1;
+                    info->dictID = 0;
                 }
                 info->windowSize = header.windowSize;
                 /* move to the end of the frame header */
