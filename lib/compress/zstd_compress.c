@@ -5238,6 +5238,7 @@ static size_t ZSTD_compressBegin_internal(ZSTD_CCtx* cctx,
     cctx->traceCtx = (ZSTD_trace_compress_begin != NULL) ? ZSTD_trace_compress_begin(cctx) : 0;
 #endif
     DEBUGLOG(4, "ZSTD_compressBegin_internal: wlog=%u", params->cParams.windowLog);
+    cctx->streamStage = zcss_init;  /* a new frame starts: leave any abandoned streaming session */
     /* params are supposed to be fully validated at this point */
     assert(!ZSTD_isError(ZSTD_checkCParams(params->cParams)));
     assert(!((dict) && (cdict)));  /* either dict or cdict, not both */
