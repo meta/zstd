@@ -281,6 +281,9 @@ size_t COVER_sum(const size_t *samplesSizes, unsigned nbSamples) {
   size_t sum = 0;
   unsigned i;
   for (i = 0; i < nbSamples; ++i) {
+    if (samplesSizes[i] > ((size_t)-1) - sum) {
+      return (size_t)-1;
+    }
     sum += samplesSizes[i];
   }
   return sum;
@@ -641,7 +644,6 @@ static size_t COVER_ctx_init(COVER_ctx_t *ctx, const void *samplesBuffer,
   const size_t trainingSamplesSize = splitPoint < 1.0 ? COVER_sum(samplesSizes, nbTrainSamples) : totalSamplesSize;
   const size_t testSamplesSize = splitPoint < 1.0 ? COVER_sum(samplesSizes + nbTrainSamples, nbTestSamples) : totalSamplesSize;
   const size_t readLength = MAX(d, sizeof(U64));
-  ctx->displayLevel = displayLevel;
   /* Checks */
   if (totalSamplesSize < readLength ||
       totalSamplesSize >= (size_t)COVER_MAX_SAMPLES_SIZE) {
@@ -671,6 +673,7 @@ static size_t COVER_ctx_init(COVER_ctx_t *ctx, const void *samplesBuffer,
   }
   /* Zero the context */
   memset(ctx, 0, sizeof(*ctx));
+  ctx->displayLevel = displayLevel;
   DISPLAYLEVEL(2, "Training on %u samples of total size %u\n", nbTrainSamples,
                (unsigned)trainingSamplesSize);
   DISPLAYLEVEL(2, "Testing on %u samples of total size %u\n", nbTestSamples,
@@ -682,11 +685,18 @@ static size_t COVER_ctx_init(COVER_ctx_t *ctx, const void *samplesBuffer,
   ctx->nbTestSamples = nbTestSamples;
   /* Partial suffix array */
   ctx->suffixSize = trainingSamplesSize - readLength + 1;
-  ctx->suffix = (U32 *)malloc(ctx->suffixSize * sizeof(U32));
-  /* Maps index to the dmerID */
-  ctx->dmerAt = (U32 *)malloc(ctx->suffixSize * sizeof(U32));
-  /* The offsets of each file */
-  ctx->offsets = (size_t *)malloc((nbSamples + 1) * sizeof(size_t));
+  { size_t const nbOffsets = (size_t)nbSamples + 1;
+    if (ctx->suffixSize > ((size_t)-1) / sizeof(U32) ||
+        nbOffsets == 0 || nbOffsets > ((size_t)-1) / sizeof(size_t)) {
+      DISPLAYLEVEL(1, "Failed to allocate scratch buffers\n");
+      return ERROR(memory_allocation);
+    }
+    ctx->suffix = (U32 *)malloc(ctx->suffixSize * sizeof(U32));
+    /* Maps index to the dmerID */
+    ctx->dmerAt = (U32 *)malloc(ctx->suffixSize * sizeof(U32));
+    /* The offsets of each file */
+    ctx->offsets = (size_t *)malloc(nbOffsets * sizeof(size_t));
+  }
   if (!ctx->suffix || !ctx->dmerAt || !ctx->offsets) {
     DISPLAYLEVEL(1, "Failed to allocate scratch buffers\n");
     COVER_ctx_destroy(ctx);
