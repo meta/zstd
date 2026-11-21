@@ -1,141 +1,240 @@
 #!/bin/sh
+# ################################################################
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
 #
-# Copyright (c) 2003 Thomas Klausner.
+# This source code is licensed under both the BSD-style license (found in the
+# LICENSE file in the root directory of this source tree) and the GPLv2 (found
+# in the COPYING file in the root directory of this source tree).
+# You may select, at your option, one of the above-listed licenses.
+# ################################################################
+# zstdgrep : search zstd-compressed files with grep
 #
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions
-# are met:
-# 1. Redistributions of source code must retain the above copyright
-#    notice, this list of conditions and the following disclaimer.
-# 2. Redistributions in binary form must reproduce the above copyright
-#    notice, this list of conditions and the following disclaimer in the
-#    documentation and/or other materials provided with the distribution.
-#
-# THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
-# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
-# OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
-# IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
-# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
-# NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
-# THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# Each input is decompressed by zstdcat into its own grep, labelled with its
+# file name. The script must tell grep options, and their values, apart from
+# the pattern and the file names : it follows the GNU grep syntax, including
+# bundled short options (-iA3), --option=value, and abbreviated long options.
+# All arguments are kept quoted, in strings meant for eval.
 
 grep=${GREP:-grep}
 zcat=${ZCAT:-zstdcat}
 
-endofopts=0
-pattern_found=0
-grep_args=""
-hyphen=0
-silent=0
-
 prog=${0##*/}
 
-# handle being called 'zegrep' or 'zfgrep'
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 2
+}
+
+usage() {
+    cat <<EOF
+Usage: $prog [OPTION]... PATTERNS [FILE]...
+Search for PATTERNS in each zstd-compressed FILE, or in standard input.
+OPTIONs are those of grep(1), except -r, -R, --include and --exclude.
+EOF
+}
+
+# quote STRING : sets $quoted to STRING, single-quoted for eval
+sq="'"
+quote() {
+    quoted= unquoted=$1
+    while :; do
+        case $unquoted in
+            *"$sq"*) quoted=$quoted${unquoted%%"$sq"*}$sq\\$sq$sq
+                     unquoted=${unquoted#*"$sq"} ;;
+            *)       break ;;
+        esac
+    done
+    quoted=$sq$quoted$unquoted$sq
+}
+
+opts=       # grep options, quoted
+operands=   # pattern (unless given by -e or -f) and files, quoted
+add_opt()     { quote "$1"; opts="$opts $quoted"; }
+add_operand() { quote "$1"; operands="$operands $quoted"; }
+
+# GNU grep long options. A trailing '=' marks those taking a value.
+long_options='after-context= basic-regexp before-context= binary
+binary-files= byte-offset color colour context= count devices=
+dereference-recursive directories= exclude= exclude-dir= exclude-from=
+extended-regexp file= files-with-matches files-without-match fixed-regexp
+fixed-strings group-separator= help ignore-case include= initial-tab
+invert-match label= line-buffered line-number line-regexp max-count=
+no-filename no-group-separator no-ignore-case no-messages null null-data
+only-matching perl-regexp quiet recursive regexp= silent text
+unix-byte-offsets version with-filename word-regexp'
+
+# resolve_long NAME : sets $long to the long option NAME stands for,
+# NAME being the full name or an unambiguous abbreviation.
+# An unknown NAME is kept as is : grep will report it.
+resolve_long() {
+    long=$1 candidate= nmatches=0
+    for known in $long_options; do
+        case ${known%=} in
+            "$1")  long=$known; return ;;
+            "$1"*) candidate=$known; nmatches=$((nmatches + 1)) ;;
+        esac
+    done
+    if [ "$nmatches" -eq 1 ]; then long=$candidate; fi
+}
+
+# Patterns read from a pipe or from standard input can only be read once,
+# while each input runs its own grep : copy them to a temporary file.
+tmpdir=
+npatternfiles=0
+buffer_patterns() {
+    buffered=$1
+    case $1 in
+        -|/dev/*) ;;
+        *) if [ -f "$1" ] || [ -d "$1" ] || [ ! -e "$1" ]; then return; fi ;;
+    esac
+    if [ -z "$tmpdir" ]; then
+        tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/zstdgrep.XXXXXXXX") || exit 2
+        trap 'rm -rf -- "$tmpdir"' EXIT
+        trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+    fi
+    npatternfiles=$((npatternfiles + 1))
+    buffered=$tmpdir/patterns$npatternfiles
+    cat -- "$1" > "$buffered" || exit 2
+}
+
+pattern_given=0
+quiet=0
+no_messages=0
+skip_directories=0
+skip_devices=0
+
+# add_valued OPTION VALUE : records an option taking a value
+add_valued() {
+    option=$1 value=$2
+    case $option in
+        -e|--regexp) pattern_given=1 ;;
+        -f|--file)   pattern_given=1; buffer_patterns "$value"; value=$buffered ;;
+        -d|--directories)
+            case $value in
+                rec*) die "$option $value is not supported" ;;
+                s*)   skip_directories=1 ;;
+                *)    skip_directories=0 ;;
+            esac ;;
+        -D|--devices)
+            case $value in
+                s*) skip_devices=1 ;;
+                *)  skip_devices=0 ;;
+            esac ;;
+        --include|--exclude|--exclude-from|--exclude-dir)
+            die "$option is not supported" ;;
+    esac
+    case $option in
+        --*) add_opt "$option=$value" ;;
+        *)   if [ -n "$value" ]; then add_opt "$option$value"
+             else add_opt "$option"; add_opt ""; fi ;;
+    esac
+}
+
 case $prog in
-    *egrep*) prog=zegrep; grep_args='-E';;
-    *fgrep*) prog=zfgrep; grep_args='-F';;
-    *)       prog=zstdgrep;;
+    *egrep*) add_opt -E ;;
+    *fgrep*) add_opt -F ;;
 esac
 
-# skip all options and pass them on to grep taking care of options
-# with arguments, and if -e was supplied
+# Options may come after operands, as with GNU grep
+while [ "$#" -gt 0 ]; do
+    arg=$1; shift
+    case $arg in
+        --) break ;;
+        --?*)
+            name=${arg#--}; name=${name%%=*}
+            resolve_long "$name"
+            case $long in
+                *=) long=${long%=}
+                    case $arg in
+                        *=*) value=${arg#*=} ;;
+                        *)   [ "$#" -gt 0 ] || die "option '--$long' requires an argument"
+                             value=$1; shift ;;
+                    esac
+                    add_valued "--$long" "$value" ;;
+                *)  case $long in
+                        quiet|silent) quiet=1 ;;
+                        no-messages)  no_messages=1 ;;
+                        recursive|dereference-recursive) die "--$long is not supported" ;;
+                        help) usage; exit 0 ;;
+                    esac
+                    add_opt "--$long${arg#--"$name"}" ;;
+            esac ;;
+        -?*)
+            flags= rest=${arg#-}
+            while [ -n "$rest" ]; do
+                char=${rest%"${rest#?}"}
+                rest=${rest#?}
+                case $char in
+                    [ABCDXdefm])
+                        if [ -n "$flags" ]; then add_opt "-$flags"; fi
+                        flags=
+                        if [ -z "$rest" ]; then
+                            [ "$#" -gt 0 ] || die "option requires an argument -- '$char'"
+                            rest=$1; shift
+                        fi
+                        add_valued "-$char" "$rest"
+                        break ;;
+                    q) quiet=1 ;;
+                    s) no_messages=1 ;;
+                    r|R) die "-$char is not supported" ;;
+                esac
+                flags=$flags$char
+            done
+            if [ -n "$flags" ]; then add_opt "-$flags"; fi ;;
+        *)  add_operand "$arg" ;;
+    esac
+done
+for arg in "$@"; do add_operand "$arg"; done
 
-while [ "$#" -gt 0 ] && [ "${endofopts}" -eq 0 ]; do
-    case "$1" in
-    # from GNU grep-2.5.1 -- keep in sync!
-        -[ABCDXdefm])
-            if [ "$#" -lt 2 ]; then
-                printf '%s: missing argument for %s flag\n' "${prog}" "$1" >&2
-                exit 1
-            fi
-            case "$1" in
-                -e)
-                    pattern="$2"
-                    pattern_found=1
-                    shift 2
-                    break
-                    ;;
-                -f)
-                    pattern_found=2
-                    ;;
-                *)
-                    ;;
-            esac
-            grep_args="${grep_args} $1 $2"
-            shift 2
-            ;;
-        --)
-            shift
-            endofopts=1
-            ;;
-        -)
-            hyphen=1
-            shift
-            ;;
-        -h)
-            silent=1
-            shift
-            ;;
-        -*)
-            grep_args="${grep_args} $1"
-            shift
-            ;;
-        *)
-            # pattern to grep for
-            endofopts=1
-            ;;
+eval "set -- $operands"
+if [ "$pattern_given" -eq 0 ]; then
+    if [ "$#" -eq 0 ]; then
+        printf '%s: missing pattern\n' "$prog" >&2
+        usage >&2
+        exit 2
+    fi
+    add_valued -e "$1"
+    shift
+fi
+if [ "$#" -gt 1 ]; then opts=" -H$opts"; fi   # an -h given by the user comes later, and wins
+if [ "$#" -eq 0 ]; then set -- -; fi
+
+if [ "$no_messages" -eq 1 ]; then exec 3>/dev/null; else exec 3>&2; fi
+
+decompress() {
+    if [ "$1" = - ]; then "$zcat" -; else "$zcat" -- "$1"; fi
+}
+
+matched=0
+failed=0
+for file in "$@"; do
+    label=
+    if [ "$file" != - ]; then
+        if [ "$skip_directories" -eq 1 ] && [ -d "$file" ]; then continue; fi
+        if [ "$skip_devices" -eq 1 ] && { [ -b "$file" ] || [ -c "$file" ] || [ -p "$file" ] || [ -S "$file" ]; }; then
+            continue
+        fi
+        label='--label="$file"'
+    fi
+    # zstdcat's exit status comes out on fd 5, grep's output goes to fd 4
+    { zstatus=$( { { decompress "$file" 2>&3; echo "$?" >&5; } |
+                   eval "\"\$grep\" $opts $label -- -" >&4; } 5>&1 )
+      gstatus=$?
+    } 4>&1
+    case $gstatus in
+        0) matched=1
+           if [ "$quiet" -eq 1 ]; then exit 0; fi ;;
+        1) ;;
+        *) if [ "$gstatus" -gt 128 ]; then exit "$gstatus"; fi   # killed, e.g. by SIGPIPE
+           exit 2 ;;   # a usage error : it would be the same for every file
+    esac
+    case $zstatus in
+        0|141|269) ;;   # 128+SIGPIPE (256+ with ksh93) : grep stopped reading early
+        *) failed=1 ;;
     esac
 done
 
-# if no -e option was found, take next argument as grep-pattern
-if [ "${pattern_found}" -lt 1 ]; then
-    if [ "$#" -ge 1 ]; then
-        pattern="$1"
-        shift
-    elif [ "${hyphen}" -gt 0 ]; then
-        pattern="-"
-    else
-        printf '%s: missing pattern\n' "${prog}" >&2
-        exit 1
-    fi
-fi
-
-EXIT_CODE=0
-# call grep ...
-if [ "$#" -lt 1 ]; then
-    # ... on stdin
-    set -f # Disable file name generation (globbing).
-    # shellcheck disable=SC2086
-    "${zcat}" - | "${grep}" ${grep_args} -- "${pattern}" -
-    EXIT_CODE=$?
-    set +f
-else
-    # ... on all files given on the command line
-    # Like grep: 0 if any file has a match, 1 if none has, >1 if grep fails.
-    EXIT_CODE=1
-    if [ "${silent}" -lt 1 ] && [ "$#" -gt 1 ]; then
-        grep_args="-H ${grep_args}"
-    fi
-    set -f
-    while [ "$#" -gt 0 ]; do
-        # shellcheck disable=SC2086
-        if [ $pattern_found -eq 2 ]; then
-            "${zcat}" -- "$1" | "${grep}" --label="${1}" ${grep_args} -- -
-        else
-            "${zcat}" -- "$1" | "${grep}" --label="${1}" ${grep_args} -- "${pattern}" -
-        fi
-        ret=$?
-        if [ "${ret}" -gt 1 ]; then
-            EXIT_CODE=${ret}
-        elif [ "${ret}" -eq 0 ] && [ "${EXIT_CODE}" -eq 1 ]; then
-            EXIT_CODE=0
-        fi
-        shift
-    done
-    set +f
-fi
-
-exit "${EXIT_CODE}"
+if [ "$failed" -eq 1 ]; then exit 2; fi
+if [ "$matched" -eq 1 ]; then exit 0; fi
+exit 1
