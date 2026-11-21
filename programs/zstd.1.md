@@ -318,7 +318,8 @@ the last one takes effect.
 * `--exclude-compressed`:
     only compress files that are not already compressed.
 * `--`:
-    All arguments after `--` are treated as files
+    All arguments after `--` are treated as files.
+    `-` still means standard input: a file named `-` can be given as `./-`.
 
 
 ### gzip Operation Modifiers

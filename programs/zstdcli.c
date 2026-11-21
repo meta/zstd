@@ -985,14 +985,14 @@ int main(int argCount, const char* argv[])
         const char* const originalArgument = argument;
         if (!argument) continue;   /* Protection if argument empty */
 
-        if (nextArgumentsAreFiles) {
-            UTIL_refFilename(filenames, argument);
+        /* "-" means stdin/stdout, even after "--" */
+        if (!strcmp(argument, "-")){
+            UTIL_refFilename(filenames, stdinmark);
             continue;
         }
 
-        /* "-" means stdin/stdout */
-        if (!strcmp(argument, "-")){
-            UTIL_refFilename(filenames, stdinmark);
+        if (nextArgumentsAreFiles) {
+            UTIL_refFilename(filenames, argument);
             continue;
         }
 
