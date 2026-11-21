@@ -6,5 +6,10 @@ println "+ good path"
 zstdless file.zst
 println "+ pass parameters"
 zstdless -N file.zst # This parameter does not produce line #s when piped, but still serves to test that the flag went to less and not zstd
+println "+ file name starting with -"
+cp file.zst ./-file.zst
+zstdless -- -file.zst
+println "+ standard input"
+zstdless < file.zst
 println "+ bad path"
 zstdless bad.zst >&2
