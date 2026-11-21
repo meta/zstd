@@ -50,3 +50,38 @@ for source in reject-in/file*; do
     cmp payload "$source"
     [ "$(cat "reject-out/$name.zst")" = 'existing output' ] || die 'rejected output was modified'
 done
+
+# Recursive expansion must not retain one descriptor per input directory.
+# Long directory names also exercise growth of the filename buffer.
+mkdir recursive
+i=1
+while [ "$i" -le 64 ]; do
+    name=$(printf 'dir%03d-%0160d' "$i" 0)
+    mkdir "recursive/$name"
+    cp payload "recursive/$name/job"
+    i=$((i + 1))
+done
+zstd -qr --rm recursive
+zstd -qtr recursive
+zstd -qlr recursive > recursive.list
+zstd -dqr --rm recursive
+for source in recursive/*/job; do
+    cmp payload "$source"
+    [ ! -e "$source.zst" ] || die 'recursive source remained after decompression'
+done
+
+# An unreadable directory is skipped without discarding readable inputs.
+(
+    mkdir -p recursive-perms/closed recursive-perms/open
+    cp payload recursive-perms/open/job
+    trap 'chmod 700 recursive-perms/closed' 0
+    chmod 000 recursive-perms/closed
+    if [ ! -r recursive-perms/closed ]; then
+        zstd -qrc recursive-perms/closed recursive-perms/open > perms.zst 2> perms.stderr
+        grep -Fq "Cannot open directory 'recursive-perms/closed'" perms.stderr
+        zstd -dcq perms.zst | cmp payload -
+        zstd -qrc recursive-perms > perms.zst 2> perms.stderr
+        grep -Fq "Cannot open directory 'recursive-perms/closed'" perms.stderr
+        zstd -dcq perms.zst | cmp payload -
+    fi
+)
