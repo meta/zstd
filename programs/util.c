@@ -553,6 +553,29 @@ int UTIL_compareStr(const void *p1, const void *p2) {
     return strcmp(* (char * const *) p1, * (char * const *) p2);
 }
 
+static UTIL_fileIdentity_t UTIL_fileIdentity(const stat_t* statbuf)
+{
+    UTIL_fileIdentity_t identity = { 0, 0, 0 };
+#if !defined(_WIN32)
+    if (statbuf != NULL) {
+        identity.device = (U64)statbuf->st_dev;
+        identity.inode = (U64)statbuf->st_ino;
+        identity.valid = 1;
+    }
+#else
+    (void)statbuf;
+#endif
+    return identity;
+}
+
+int UTIL_isSameFileIdentity(const UTIL_fileIdentity_t* expected, const stat_t* actual)
+{
+    UTIL_fileIdentity_t const identity = UTIL_fileIdentity(actual);
+    return expected == NULL || !expected->valid
+        || (identity.valid && expected->device == identity.device
+                           && expected->inode == identity.inode);
+}
+
 #if defined(_WIN32)
 /* note : Windows has no inode numbers, but a file's identity is given by
  *        its volume serial number and file index, which stay the same
@@ -626,8 +649,8 @@ int UTIL_isSameFileStat(
     ret = UTIL_isSameFileWin32(fName1, fName2);
 #else
     {
-        ret =  (file1Stat->st_dev == file2Stat->st_dev)
-            && (file1Stat->st_ino == file2Stat->st_ino);
+        UTIL_fileIdentity_t const identity = UTIL_fileIdentity(file1Stat);
+        ret = UTIL_isSameFileIdentity(&identity, file2Stat);
     }
 #endif
     UTIL_TRACE_RET(ret);
@@ -1043,6 +1066,7 @@ UTIL_assembleFileNamesTable2(const char** filenames, size_t tableSize, size_t ta
     FileNamesTable* const table = (FileNamesTable*) malloc(sizeof(*table));
     CONTROL(table != NULL);
     table->fileNames = filenames;
+    table->fileIdentities = NULL;
     table->buf = buf;
     table->tableSize = tableSize;
     table->tableCapacity = tableCapacity;
@@ -1059,6 +1083,7 @@ void UTIL_freeFileNamesTable(FileNamesTable* table)
 {
     if (table==NULL) return;
     free((void*)table->fileNames);
+    free(table->fileIdentities);
     free(table->buf);
     free(table);
 }
@@ -1087,6 +1112,8 @@ void UTIL_refFilename(FileNamesTable* fnt, const char* filename)
 {
     assert(fnt->tableSize < fnt->tableCapacity);
     fnt->fileNames[fnt->tableSize] = filename;
+    if (fnt->fileIdentities != NULL)
+        fnt->fileIdentities[fnt->tableSize] = UTIL_fileIdentity(NULL);
     fnt->tableSize++;
 }
 
@@ -1117,8 +1144,13 @@ UTIL_mergeFileNamesTable(FileNamesTable* table1, FileNamesTable* table2)
 
     newTable->buf = buf;
     newTable->tableSize = table1->tableSize + table2->tableSize;
+    newTable->tableCapacity = newTable->tableSize;
     newTable->fileNames = (const char **) calloc(newTable->tableSize, sizeof(*(newTable->fileNames)));
     CONTROL ( newTable->fileNames != NULL );
+    if (table1->fileIdentities != NULL || table2->fileIdentities != NULL) {
+        newTable->fileIdentities = (UTIL_fileIdentity_t*) calloc(newTable->tableSize, sizeof(*newTable->fileIdentities));
+        CONTROL(newTable->fileIdentities != NULL);
+    }
 
     {   unsigned idx1;
         for( idx1=0 ; (idx1 < table1->tableSize) && table1->fileNames[idx1] && (pos < newTotalTableSize); ++idx1, ++newTableIdx) {
@@ -1126,6 +1158,8 @@ UTIL_mergeFileNamesTable(FileNamesTable* table1, FileNamesTable* table2)
             memcpy(buf+pos, table1->fileNames[idx1], curLen);
             assert(newTableIdx <= newTable->tableSize);
             newTable->fileNames[newTableIdx] = buf+pos;
+            if (table1->fileIdentities != NULL)
+                newTable->fileIdentities[newTableIdx] = table1->fileIdentities[idx1];
             pos += curLen+1;
     }   }
 
@@ -1135,6 +1169,8 @@ UTIL_mergeFileNamesTable(FileNamesTable* table1, FileNamesTable* table2)
             memcpy(buf+pos, table2->fileNames[idx2], curLen);
             assert(newTableIdx < newTable->tableSize);
             newTable->fileNames[newTableIdx] = buf+pos;
+            if (table2->fileIdentities != NULL)
+                newTable->fileIdentities[newTableIdx] = table2->fileIdentities[idx2];
             pos += curLen+1;
     }   }
     assert(pos <= newTotalTableSize);
@@ -1147,15 +1183,19 @@ UTIL_mergeFileNamesTable(FileNamesTable* table1, FileNamesTable* table2)
 }
 
 /* Pointers into the string buffer are assembled only after it can no longer
- * be reallocated. All paths use the same append and growth logic. */
+ * be reallocated. All paths use the same append and growth logic.
+ * Optional identity records follow the same order. */
 typedef struct {
     char* buf;
     size_t used;
     size_t capacity;
+    UTIL_fileIdentity_t* identities;
     size_t nbFiles;
+    size_t identityCapacity;
 } UTIL_fileList_t;
 
-static int UTIL_fileListAdd(UTIL_fileList_t* list, const char* path, size_t length)
+static int UTIL_fileListAdd(UTIL_fileList_t* list, const char* path,
+                            size_t length, const stat_t* statbuf)
 {
     size_t needed;
     if (length >= (size_t)-1 - list->used) return 0;
@@ -1168,6 +1208,23 @@ static int UTIL_fileListAdd(UTIL_fileList_t* list, const char* path, size_t leng
         list->buf = buf;
         list->capacity = needed + extra;
     }
+#if !defined(_WIN32)
+    /* Keep one spare entry, like the completed FileNamesTable. */
+    if (list->nbFiles + 1 >= list->identityCapacity) {
+        size_t const capacity = list->identityCapacity != 0
+                              ? list->identityCapacity * 2 : 64;
+        UTIL_fileIdentity_t* identities;
+        if (capacity <= list->nbFiles + 1
+         || capacity > (size_t)-1 / sizeof(*identities)) return 0;
+        identities = (UTIL_fileIdentity_t*)realloc(list->identities, capacity * sizeof(*identities));
+        if (identities == NULL) return 0;
+        list->identities = identities;
+        list->identityCapacity = capacity;
+    }
+    list->identities[list->nbFiles] = UTIL_fileIdentity(statbuf);
+#else
+    (void)statbuf;
+#endif
     memcpy(list->buf + list->used, path, length + 1);
     list->used = needed;
     ++list->nbFiles;
@@ -1175,15 +1232,19 @@ static int UTIL_fileListAdd(UTIL_fileList_t* list, const char* path, size_t leng
 }
 
 /* Return 1 on success, including skipped unreadable directories, or 0 on
- * an allocation/read error. */
+ * an allocation/read error or a changed directory. */
 #ifdef _WIN32
-static int UTIL_prepareFileList(const char* dirName, UTIL_fileList_t* list, int followLinks)
+static int UTIL_prepareFileList(const char* dirName, int parentFd,
+                                const stat_t* expectedDir,
+                                UTIL_fileList_t* list, int followLinks)
 {
     char* path;
     size_t dirLength, pathLength;
     int result = 1;
     WIN32_FIND_DATAA cFile;
     HANDLE hFile;
+
+    (void)parentFd; (void)expectedDir;
 
     dirLength = strlen(dirName);
     path = (char*) malloc(dirLength + 3);
@@ -1222,11 +1283,11 @@ static int UTIL_prepareFileList(const char* dirName, UTIL_fileList_t* list, int 
                 free(path);
                 continue;
             }
-            result = UTIL_prepareFileList(path, list, followLinks);
+            result = UTIL_prepareFileList(path, -1, NULL, list, followLinks);
         } else if ( (cFile.dwFileAttributes & FILE_ATTRIBUTE_NORMAL)
                  || (cFile.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)
                  || (cFile.dwFileAttributes & FILE_ATTRIBUTE_COMPRESSED) ) {
-            result = UTIL_fileListAdd(list, path, pathLength);
+            result = UTIL_fileListAdd(list, path, pathLength, NULL);
         }
         free(path);
         if (!result) break;
@@ -1238,23 +1299,62 @@ static int UTIL_prepareFileList(const char* dirName, UTIL_fileList_t* list, int 
 
 #elif defined(__linux__) || (PLATFORM_POSIX_VERSION >= 200112L)  /* opendir, readdir require POSIX.1-2001 */
 
-static int UTIL_prepareFileList(const char *dirName, UTIL_fileList_t* list, int followLinks)
+static int UTIL_prepareFileList(const char *dirName, int parentFd,
+                                const stat_t* expectedDir,
+                                UTIL_fileList_t* list, int followLinks)
 {
     DIR* dir;
     struct dirent * entry;
     size_t const dirLength = strlen(dirName);
     int result = 1;
+    int dirFd = -1;
 
+#if UTIL_HAVE_OPENAT
+    {   int const flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC
+                        | (followLinks ? 0 : O_NOFOLLOW);
+        stat_t openedStat;
+        int const fd = UTIL_openInDir(parentFd, dirName, flags, 0);
+        if (fd < 0) {
+            int const openError = errno;
+            stat_t currentStat;
+            int const unchanged = expectedDir != NULL
+                && UTIL_statInDir(parentFd, dirName, &currentStat)
+                && UTIL_isSameFileStat(dirName, dirName, expectedDir, &currentStat);
+            UTIL_DISPLAYLEVEL(1, "Cannot open directory '%s': %s\n", dirName, strerror(openError));
+            /* Keep skipping an inaccessible directory, but not a replacement. */
+            return unchanged;
+        }
+        if (!UTIL_fstat(fd, dirName, &openedStat)
+         || (expectedDir != NULL && !UTIL_isSameFileStat(dirName, dirName, expectedDir, &openedStat))) {
+            UTIL_DISPLAYLEVEL(1, "Directory '%s' changed while opening -- ignored\n", dirName);
+            close(fd);
+            return 0;
+        }
+        dir = fdopendir(fd);
+        if (dir == NULL) {
+            int const savedErrno = errno;
+            close(fd);
+            errno = savedErrno;
+        }
+    }
+#else
+    (void)parentFd; (void)expectedDir;
     dir = opendir(dirName);
+#endif
     if (dir == NULL) {
         UTIL_DISPLAYLEVEL(1, "Cannot open directory '%s': %s\n", dirName, strerror(errno));
         return 1;  /* skip directories that cannot be enumerated */
     }
+#if UTIL_HAVE_OPENAT
+    dirFd = dirfd(dir);
+#endif
 
     errno = 0;
     while ((entry = readdir(dir)) != NULL) {
         char* path;
         size_t fnameLength, pathLength;
+        stat_t entryStat;
+        int statResult;
         if (strcmp (entry->d_name, "..") == 0 ||
             strcmp (entry->d_name, ".") == 0) continue;
         fnameLength = strlen(entry->d_name);
@@ -1267,17 +1367,29 @@ static int UTIL_prepareFileList(const char *dirName, UTIL_fileList_t* list, int 
         pathLength = dirLength+1+fnameLength;
         path[pathLength] = 0;
 
-        if (!followLinks && UTIL_isLink(path)) {
+#if UTIL_HAVE_OPENAT
+        statResult = fstatat(dirFd, entry->d_name, &entryStat,
+                            followLinks ? 0 : AT_SYMLINK_NOFOLLOW);
+#else
+        statResult = followLinks ? stat(path, &entryStat) : lstat(path, &entryStat);
+#endif
+        if (statResult != 0) {
+            UTIL_DISPLAYLEVEL(1, "Cannot stat '%s': %s\n", path, strerror(errno));
+            free(path);
+            result = 0;
+            break;
+        }
+        if (!followLinks && S_ISLNK(entryStat.st_mode)) {
             UTIL_DISPLAYLEVEL(2, "Warning : %s is a symbolic link, ignoring\n", path);
             free(path);
             errno = 0;
             continue;
         }
 
-        if (UTIL_isDirectory(path)) {
-            result = UTIL_prepareFileList(path, list, followLinks);
+        if (UTIL_isDirectoryStat(&entryStat)) {
+            result = UTIL_prepareFileList(path, dirFd, &entryStat, list, followLinks);
         } else {
-            result = UTIL_fileListAdd(list, path, pathLength);
+            result = UTIL_fileListAdd(list, path, pathLength, &entryStat);
         }
         free(path);
         if (!result) break;
@@ -1294,9 +1406,11 @@ static int UTIL_prepareFileList(const char *dirName, UTIL_fileList_t* list, int 
 
 #else
 
-static int UTIL_prepareFileList(const char *dirName, UTIL_fileList_t* list, int followLinks)
+static int UTIL_prepareFileList(const char *dirName, int parentFd,
+                                const stat_t* expectedDir,
+                                UTIL_fileList_t* list, int followLinks)
 {
-    (void)list; (void)followLinks;
+    (void)parentFd; (void)expectedDir; (void)list; (void)followLinks;
     UTIL_DISPLAYLEVEL(1, "Directory %s ignored (compiled without _WIN32 or _POSIX_C_SOURCE) \n", dirName);
     return 1;
 }
@@ -1629,16 +1743,20 @@ void UTIL_mirrorSourceFilesDirectories(const char** inFileNames, unsigned int nb
 FileNamesTable*
 UTIL_createExpandedFNT(const char* const* inputNames, size_t nbIfns, int followLinks)
 {
-    UTIL_fileList_t list = { NULL, 0, 0, 0 };
+    UTIL_fileList_t list = { NULL, 0, 0, NULL, 0, 0 };
     size_t i, pos;
     const char** names;
+    FileNamesTable* table;
 
     for (i = 0; i < nbIfns; ++i) {
-        if (UTIL_isDirectory(inputNames[i])) {
-            if (!UTIL_prepareFileList(inputNames[i], &list, followLinks))
+        stat_t statbuf;
+        int const hasStat = UTIL_stat(inputNames[i], &statbuf);
+        if (hasStat && UTIL_isDirectoryStat(&statbuf)) {
+            if (!UTIL_prepareFileList(inputNames[i], -1, &statbuf, &list, followLinks))
                 goto error;
         } else {
-            if (!UTIL_fileListAdd(&list, inputNames[i], strlen(inputNames[i])))
+            /* Keep explicit missing names for the usual source-open error. */
+            if (!UTIL_fileListAdd(&list, inputNames[i], strlen(inputNames[i]), hasStat ? &statbuf : NULL))
                 goto error;
         }
     }
@@ -1652,9 +1770,12 @@ UTIL_createExpandedFNT(const char* const* inputNames, size_t nbIfns, int followL
         pos += strlen(names[i]) + 1;
     }
     assert(pos == list.used);
-    return UTIL_assembleFileNamesTable2(names, list.nbFiles, list.nbFiles + 1, list.buf);
+    table = UTIL_assembleFileNamesTable2(names, list.nbFiles, list.nbFiles + 1, list.buf);
+    table->fileIdentities = list.identities;
+    return table;
 
 error:
+    free(list.identities);
     free(list.buf);
     return NULL;
 }

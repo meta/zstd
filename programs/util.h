@@ -213,6 +213,15 @@ int UTIL_isRegularFile(const char* infilename);
 int UTIL_isDirectory(const char* infilename);
 int UTIL_isSameFile(const char* file1, const char* file2);
 int UTIL_isSameFileStat(const char* file1, const char* file2, const stat_t* file1Stat, const stat_t* file2Stat);
+
+/* A saved POSIX file identity. An invalid or absent identity imposes no
+ * additional check. Windows stat_t doesn't provide a usable identity. */
+typedef struct {
+    U64 device;
+    U64 inode;
+    int valid;
+} UTIL_fileIdentity_t;
+int UTIL_isSameFileIdentity(const UTIL_fileIdentity_t* expected, const stat_t* actual);
 int UTIL_isCompressedFile(const char* infilename, const char *extensionList[]);
 int UTIL_isLink(const char* infilename);
 int UTIL_isFIFO(const char* infilename);
@@ -271,6 +280,7 @@ char* UTIL_createMirroredDestDirName(const char* srcFileName, const char* outDir
 
 typedef struct
 {   const char** fileNames;
+    UTIL_fileIdentity_t* fileIdentities; /* optional, parallel to fileNames */
     char* buf;            /* fileNames are stored in this buffer (or are read-only) */
     size_t tableSize;     /* nb of fileNames */
     size_t tableCapacity;
@@ -361,6 +371,11 @@ void UTIL_refFilename(FileNamesTable* fnt, const char* filename);
 /*! UTIL_createExpandedFNT() :
  *  read names from @filenames, and expand those corresponding to directories.
  *  links are followed or not depending on @followLinks directive.
+ *  On POSIX, fileIdentities records the selected files. Consumers must check
+ *  these identities against the files actually opened, before reading them.
+ *  Directory-relative traversal is used where available; no descriptors are
+ *  retained in the returned table. A consumer using identities must preserve
+ *  their association when reordering names.
  * @return : an expanded FileNamesTable*, where each name is a file
  *        or NULL in case of error
  */
