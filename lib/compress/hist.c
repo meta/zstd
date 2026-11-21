@@ -368,11 +368,13 @@ size_t HIST_count_parallel_wksp(unsigned* count, unsigned* maxSymbolValuePtr,
     const BYTE* ip = (const BYTE*)source;
     const BYTE* const iend = ip+sourceSize;
     size_t const countSize = (*maxSymbolValuePtr + 1) * sizeof(*count);
+    /* trusted input only contains symbols <= *maxSymbolValuePtr */
+    unsigned const tableSize = (check == trustInput) ? *maxSymbolValuePtr + 1 : 256;
     unsigned max=0;
     U32* const Counting1 = workSpace;
-    U32* const Counting2 = Counting1 + 256;
-    U32* const Counting3 = Counting2 + 256;
-    U32* const Counting4 = Counting3 + 256;
+    U32* const Counting2 = Counting1 + tableSize;
+    U32* const Counting3 = Counting2 + tableSize;
+    U32* const Counting4 = Counting3 + tableSize;
 
     /* safety checks */
     assert(*maxSymbolValuePtr <= 255);
@@ -381,7 +383,7 @@ size_t HIST_count_parallel_wksp(unsigned* count, unsigned* maxSymbolValuePtr,
         *maxSymbolValuePtr = 0;
         return 0;
     }
-    ZSTD_memset(workSpace, 0, 4*256*sizeof(unsigned));
+    ZSTD_memset(workSpace, 0, 4*tableSize*sizeof(unsigned));
 
     /* by stripes of 16 bytes */
     {   U32 cached = MEM_read32(ip); ip += 4;
@@ -414,12 +416,12 @@ size_t HIST_count_parallel_wksp(unsigned* count, unsigned* maxSymbolValuePtr,
     while (ip<iend) Counting1[*ip++]++;
 
     {   U32 s;
-        for (s=0; s<256; s++) {
+        for (s=0; s<tableSize; s++) {
             Counting1[s] += Counting2[s] + Counting3[s] + Counting4[s];
             if (Counting1[s] > max) max = Counting1[s];
     }   }
 
-    {   unsigned maxSymbolValue = 255;
+    {   unsigned maxSymbolValue = tableSize-1;
         while (!Counting1[maxSymbolValue]) maxSymbolValue--;
         if (check && maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
         *maxSymbolValuePtr = maxSymbolValue;

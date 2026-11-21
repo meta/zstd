@@ -288,6 +288,152 @@ ZSTD_buildCTable(void* dst, size_t dstCapacity,
     }
 }
 
+/* Worst case size of one sequence in the bitstream :
+ * 3 FSE states, then extra bits (16 for litLength, 16 for matchLength, up to 31 for offset) */
+#define ZSTD_SEQUENCE_MAX_BITS (LLFSELog + MLFSELog + OffFSELog + 16 + 16 + 31)
+
+#define ZSTD_EXTRABITS_CHUNK 64   /* sequences per packing pass: 9 bytes each on the stack, keeps the frame under 1 KB */
+
+#if defined(ZSTD_ARCH_ARM_NEON) && (defined(__aarch64__) || defined(_M_ARM64))
+/* ZSTD_packExtraBits_neon() :
+ * packs the first (nbSeq & ~15) sequences, see ZSTD_packExtraBits(), on little-endian.
+ * Shift counts only need to be in the low byte of each lane (vshlq_u32()),
+ * so they are spread with byte shuffles which replicate them over the whole lane.
+ * @return : nb of sequences packed */
+static size_t ZSTD_packExtraBits_neon(U64* extraBits, BYTE* nbExtraBits,
+                                      SeqDef const* sequences, BYTE const* llCodeTable,
+                                      BYTE const* mlCodeTable, BYTE const* ofCodeTable, size_t nbSeq)
+{
+    BYTE llBits[48] = { 0 };   /* LL_bits[] and ML_bits[], padded for table lookups */
+    BYTE mlBits[64] = { 0 };
+    uint8x16x3_t llBitsTable;
+    uint8x16x4_t mlBitsTable;
+    static const BYTE spread[16] = { 0,0,0,0, 1,1,1,1, 2,2,2,2, 3,3,3,3 };
+    uint8x16_t const spread0 = vld1q_u8(spread);
+    uint32x4_t const ones = vdupq_n_u32(0xFFFFFFFF);
+    size_t n;
+    ZSTD_STATIC_ASSERT(sizeof(SeqDef) == 8);
+    ZSTD_STATIC_ASSERT(offsetof(SeqDef, offBase) == 0);
+    ZSTD_STATIC_ASSERT(offsetof(SeqDef, litLength) == 4);
+    ZSTD_STATIC_ASSERT(offsetof(SeqDef, mlBase) == 6);
+    if (!MEM_isLittleEndian()) return 0;
+    ZSTD_memcpy(llBits, LL_bits, sizeof(LL_bits));
+    ZSTD_memcpy(mlBits, ML_bits, sizeof(ML_bits));
+    llBitsTable.val[0] = vld1q_u8(llBits);
+    llBitsTable.val[1] = vld1q_u8(llBits + 16);
+    llBitsTable.val[2] = vld1q_u8(llBits + 32);
+    mlBitsTable.val[0] = vld1q_u8(mlBits);
+    mlBitsTable.val[1] = vld1q_u8(mlBits + 16);
+    mlBitsTable.val[2] = vld1q_u8(mlBits + 32);
+    mlBitsTable.val[3] = vld1q_u8(mlBits + 48);
+    for (n = 0; n + 16 <= nbSeq; n += 16) {
+        uint8x16_t const llb = vqtbl3q_u8(llBitsTable, vld1q_u8(llCodeTable + n));
+        uint8x16_t const mlb = vqtbl4q_u8(mlBitsTable, vld1q_u8(mlCodeTable + n));
+        uint8x16_t const ofb = vld1q_u8(ofCodeTable + n);
+        size_t k;
+        vst1q_u8(nbExtraBits + n, vaddq_u8(vaddq_u8(llb, mlb), ofb));
+        for (k = 0; k < 4; k++) {
+            uint8x16_t const spreadK = vaddq_u8(spread0, vdupq_n_u8((BYTE)(4*k)));
+            int32x4_t const llb32 = vreinterpretq_s32_u8(vqtbl1q_u8(llb, spreadK));
+            int32x4_t const mlb32 = vreinterpretq_s32_u8(vqtbl1q_u8(mlb, spreadK));
+            int32x4_t const ofb32 = vreinterpretq_s32_u8(vqtbl1q_u8(ofb, spreadK));
+            int32x4_t const llmlb32 = vaddq_s32(llb32, mlb32);   /* low bytes don't carry */
+            /* val[0] : offBase, val[1] : litLength | mlBase << 16 */
+            uint32x4x2_t const seqs = vld2q_u32(&sequences[n + 4*k].offBase);
+            /* llBits <= 16, so masking with mask(llBits) also clears mlBase */
+            uint32x4_t const llm = vbicq_u32(seqs.val[1], vshlq_u32(ones, llb32));
+            uint32x4_t const mlm = vbicq_u32(vshrq_n_u32(seqs.val[1], 16), vshlq_u32(ones, mlb32));
+            uint32x4_t const ofm = vbicq_u32(seqs.val[0], vshlq_u32(ones, ofb32));
+            uint32x4_t const llml = vorrq_u32(llm, vshlq_u32(mlm, llb32));
+            /* 64-bit extra bits, from their low and high 32-bit halves (little-endian) */
+            uint32x4_t const low = vorrq_u32(llml, vshlq_u32(ofm, llmlb32));
+            uint32x4_t const high = vshlq_u32(ofm, vsubq_s32(llmlb32, vdupq_n_s32(32)));
+            vst1q_u8((BYTE*)(extraBits + n + 4*k), vreinterpretq_u8_u32(vzip1q_u32(low, high)));
+            vst1q_u8((BYTE*)(extraBits + n + 4*k + 2), vreinterpretq_u8_u32(vzip2q_u32(low, high)));
+        }
+    }
+    return n;
+}
+#endif
+
+/* ZSTD_packExtraBits() :
+ * extraBits[i] : extra bits of sequences[i], in bitstream order :
+ *                litLength bits, then matchLength bits, then offset bits.
+ * nbExtraBits[i] : their number, <= 16 + 16 + 31 */
+static void ZSTD_packExtraBits(U64* extraBits, BYTE* nbExtraBits,
+                               SeqDef const* sequences, BYTE const* llCodeTable,
+                               BYTE const* mlCodeTable, BYTE const* ofCodeTable, size_t nbSeq)
+{
+    size_t i = 0;
+#if defined(ZSTD_ARCH_ARM_NEON) && (defined(__aarch64__) || defined(_M_ARM64))
+    if (nbSeq >= 16)   /* the vector loop's table setup only pays for full vectors */
+        i = ZSTD_packExtraBits_neon(extraBits, nbExtraBits, sequences,
+                                    llCodeTable, mlCodeTable, ofCodeTable, nbSeq);
+#endif
+    for (; i < nbSeq; i++) {
+        U32 const llBits = LL_bits[llCodeTable[i]];
+        U32 const mlBits = ML_bits[mlCodeTable[i]];
+        U32 const ofBits = ofCodeTable[i];
+        extraBits[i] = (U64)(sequences[i].litLength & BIT_mask[llBits])
+                     | ((U64)(sequences[i].mlBase & BIT_mask[mlBits]) << llBits)
+                     | ((U64)(sequences[i].offBase & BIT_mask[ofBits]) << (llBits + mlBits));
+        nbExtraBits[i] = (BYTE)(llBits + mlBits + ofBits);
+    }
+}
+
+FORCE_INLINE_TEMPLATE void ZSTD_flushSeqBits(BIT_CStream_t* bitC, int kFastFlush)
+{
+    if (kFastFlush) BIT_flushBitsFast(bitC); else BIT_flushBits(bitC);
+}
+
+/* ZSTD_encodeSequences_64bits() :
+ * encodes sequences [0, nbSeq), from last to first, on 64-bit bit containers.
+ * Extra bits are packed beforehand, by chunks of ZSTD_EXTRABITS_CHUNK sequences,
+ * into extraBits[] and nbExtraBits[], so each sequence adds them at once.
+ * kFastFlush : dst can hold nbSeq worst case sequences, so flushes skip the end of buffer check */
+FORCE_INLINE_TEMPLATE void
+ZSTD_encodeSequences_64bits(BIT_CStream_t* blockStream,
+            U64* extraBits, BYTE* nbExtraBits,
+            FSE_CState_t* stateMatchLength, BYTE const* mlCodeTable,
+            FSE_CState_t* stateOffsetBits, BYTE const* ofCodeTable,
+            FSE_CState_t* stateLitLength, BYTE const* llCodeTable,
+            SeqDef const* sequences, size_t nbSeq, int kFastFlush)
+{
+    size_t end = nbSeq;
+    assert(MEM_64bits());
+    while (end > 0) {
+        size_t const start = end - MIN(end, ZSTD_EXTRABITS_CHUNK);
+        BYTE const* const llCodes = llCodeTable + start;
+        BYTE const* const mlCodes = mlCodeTable + start;
+        BYTE const* const ofCodes = ofCodeTable + start;
+        size_t i;
+        ZSTD_packExtraBits(extraBits, nbExtraBits, sequences + start,
+                           llCodes, mlCodes, ofCodes, end - start);
+        for (i = end - start; i-- > 0; ) {
+            U64 const extra = extraBits[i];
+            unsigned const nbExtra = nbExtraBits[i];
+            FSE_encodeSymbol(blockStream, stateOffsetBits, ofCodes[i]);
+            FSE_encodeSymbol(blockStream, stateMatchLength, mlCodes[i]);
+            FSE_encodeSymbol(blockStream, stateLitLength, llCodes[i]);
+            /* up to 7 + LLFSELog+MLFSELog+OffFSELog bits are in the container */
+            if (nbExtra >= 64-7-(LLFSELog+MLFSELog+OffFSELog)) {
+                ZSTD_flushSeqBits(blockStream, kFastFlush);
+                if (nbExtra > 64-8) {
+                    BIT_addBitsFast(blockStream, (BitContainerType)(extra & 0xFFFFFFFF), 32);
+                    ZSTD_flushSeqBits(blockStream, kFastFlush);
+                    BIT_addBitsFast(blockStream, (BitContainerType)(extra >> 32), nbExtra - 32);
+                } else {
+                    BIT_addBitsFast(blockStream, (BitContainerType)extra, nbExtra);
+                }
+            } else {
+                BIT_addBitsFast(blockStream, (BitContainerType)extra, nbExtra);
+            }
+            ZSTD_flushSeqBits(blockStream, kFastFlush);
+        }
+        end = start;
+    }
+}
+
 FORCE_INLINE_TEMPLATE size_t
 ZSTD_encodeSequences_body(
             void* dst, size_t dstCapacity,
@@ -331,7 +477,26 @@ ZSTD_encodeSequences_body(
     }
     BIT_flushBits(&blockStream);
 
-    {   size_t n;
+    if (MEM_64bits()) {
+        /* packing scratch, shared by both flush modes */
+        U64  extraBits[ZSTD_EXTRABITS_CHUNK];
+        BYTE nbExtraBits[ZSTD_EXTRABITS_CHUNK];
+        /* flushes can't reach the end of dst when it holds nbSeq worst case sequences */
+        if (dstCapacity >= sizeof(blockStream.bitContainer) + (nbSeq * ZSTD_SEQUENCE_MAX_BITS + 7) / 8) {
+            ZSTD_encodeSequences_64bits(&blockStream, extraBits, nbExtraBits,
+                                        &stateMatchLength, mlCodeTable,
+                                        &stateOffsetBits, ofCodeTable,
+                                        &stateLitLength, llCodeTable,
+                                        sequences, nbSeq - 1, /* kFastFlush */ 1);
+        } else {
+            ZSTD_encodeSequences_64bits(&blockStream, extraBits, nbExtraBits,
+                                        &stateMatchLength, mlCodeTable,
+                                        &stateOffsetBits, ofCodeTable,
+                                        &stateLitLength, llCodeTable,
+                                        sequences, nbSeq - 1, /* kFastFlush */ 0);
+        }
+    } else {   /* 32-bit bit container */
+        size_t n;
         for (n=nbSeq-2 ; n<nbSeq ; n--) {      /* intentional underflow */
             BYTE const llCode = llCodeTable[n];
             BYTE const ofCode = ofCodeTable[n];
@@ -343,19 +508,17 @@ ZSTD_encodeSequences_body(
                         (unsigned)sequences[n].litLength,
                         (unsigned)sequences[n].mlBase + MINMATCH,
                         (unsigned)sequences[n].offBase);
-                                                                            /* 32b*/  /* 64b*/
-                                                                            /* (7)*/  /* (7)*/
-            FSE_encodeSymbol(&blockStream, &stateOffsetBits, ofCode);       /* 15 */  /* 15 */
-            FSE_encodeSymbol(&blockStream, &stateMatchLength, mlCode);      /* 24 */  /* 24 */
-            if (MEM_32bits()) BIT_flushBits(&blockStream);                  /* (7)*/
-            FSE_encodeSymbol(&blockStream, &stateLitLength, llCode);        /* 16 */  /* 33 */
-            if (MEM_32bits() || (ofBits+mlBits+llBits >= 64-7-(LLFSELog+MLFSELog+OffFSELog)))
-                BIT_flushBits(&blockStream);                                /* (7)*/
+                                                                            /* (7)*/
+            FSE_encodeSymbol(&blockStream, &stateOffsetBits, ofCode);       /* 15 */
+            FSE_encodeSymbol(&blockStream, &stateMatchLength, mlCode);      /* 24 */
+            BIT_flushBits(&blockStream);                                    /* (7)*/
+            FSE_encodeSymbol(&blockStream, &stateLitLength, llCode);        /* 16 */
+            BIT_flushBits(&blockStream);                                    /* (7)*/
             BIT_addBits(&blockStream, sequences[n].litLength, llBits);
-            if (MEM_32bits() && ((llBits+mlBits)>24)) BIT_flushBits(&blockStream);
+            if ((llBits+mlBits)>24) BIT_flushBits(&blockStream);
             BIT_addBits(&blockStream, sequences[n].mlBase, mlBits);
-            if (MEM_32bits() || (ofBits+mlBits+llBits > 56)) BIT_flushBits(&blockStream);
-            if (MEM_32bits() && longOffsets) {
+            BIT_flushBits(&blockStream);
+            if (longOffsets) {
                 unsigned const extraBits = ofBits - MIN(ofBits, STREAM_ACCUMULATOR_MIN-1);
                 if (extraBits) {
                     BIT_addBits(&blockStream, sequences[n].offBase, extraBits);
