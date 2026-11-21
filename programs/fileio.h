@@ -104,9 +104,9 @@ void FIO_setPassThroughFlag(FIO_prefs_t* const prefs, int value);
 void FIO_setMMapDict(FIO_prefs_t* const prefs, ZSTD_ParamSwitch_e value);
 
 /* FIO_ctx_t functions */
-void FIO_setNbFilesTotal(FIO_ctx_t* const fCtx, int value);
 void FIO_setHasStdoutOutput(FIO_ctx_t* const fCtx, int value);
-void FIO_determineHasStdinInput(FIO_ctx_t* const fCtx, const FileNamesTable* const filenames);
+/* filenames and its identities must outlive the operation and keep their order. */
+void FIO_setInputFiles(FIO_ctx_t* const fCtx, const FileNamesTable* filenames);
 
 /*-*************************************
 *  Single File functions
@@ -123,7 +123,7 @@ int FIO_compressFilename (FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs,
 int FIO_decompressFilename (FIO_ctx_t* const fCtx, FIO_prefs_t* const prefs,
                             const char* outfilename, const char* infilename, const char* dictFileName);
 
-int FIO_listMultipleFiles(unsigned numFiles, const char** filenameTable, int displayLevel);
+int FIO_listMultipleFiles(const FileNamesTable* filenames, int displayLevel);
 
 
 /*-*************************************

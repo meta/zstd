@@ -1418,7 +1418,7 @@ int main(int argCount, const char* argv[])
 
     if (operation == zom_list) {
 #ifndef ZSTD_NODECOMPRESS
-        int const ret = FIO_listMultipleFiles((unsigned)filenames->tableSize, filenames->fileNames, g_displayLevel);
+        int const ret = FIO_listMultipleFiles(filenames, g_displayLevel);
         CLEAN_RETURN(ret);
 #else
         DISPLAYLEVEL(1, "file information is not supported \n");
@@ -1601,8 +1601,7 @@ int main(int argCount, const char* argv[])
 
     /* IO Stream/File */
     FIO_setHasStdoutOutput(fCtx, hasStdout);
-    FIO_setNbFilesTotal(fCtx, (int)filenames->tableSize);
-    FIO_determineHasStdinInput(fCtx, filenames);
+    FIO_setInputFiles(fCtx, filenames);
     FIO_setNotificationLevel(g_displayLevel);
     FIO_setAllowBlockDevices(prefs, allowBlockDevices);
     FIO_setPatchFromMode(prefs, patchFromDictFileName != NULL);
