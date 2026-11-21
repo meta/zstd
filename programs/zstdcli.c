@@ -414,6 +414,7 @@ static int readIntFromChar(const char** stringPtr) {
         sign = -1;
     }
     if (readU32FromCharChecked(stringPtr, &result)) { errorOut(errorMsg); }
+    if (result > (unsigned)INT_MAX) { errorOut(errorMsg); }
     return (int) result * sign;
 }
 
