@@ -2738,6 +2738,9 @@ size_t ZSTD_initCStream_usingDict(ZSTD_CStream* zcs,
  *     ZSTD_CCtx_setParams(zcs, params);
  *     ZSTD_CCtx_setPledgedSrcSize(zcs, pledgedSrcSize);
  *     ZSTD_CCtx_loadDictionary(zcs, dict, dictSize);
+ * Note: ZSTD_initCStream_advanced() also clears the compression level (ZSTD_c_compressionLevel
+ *       then reads back as 0), but ZSTD_CCtx_setParams() does not. Compression parameters
+ *       set back to 0 afterwards are then derived from the default compression level.
  *
  * dict is loaded with ZSTD_dct_auto and ZSTD_dlm_byCopy.
  * pledgedSrcSize must be correct.
