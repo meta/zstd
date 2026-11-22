@@ -185,6 +185,8 @@ static void ZSTD_copy16(void* dst, const void* src) {
     vst1q_u8((uint8_t*)dst, vld1q_u8((const uint8_t*)src));
 #elif defined(ZSTD_ARCH_X86_SSE2)
     _mm_storeu_si128((__m128i*)dst, _mm_loadu_si128((const __m128i*)src));
+#elif defined(ZSTD_ARCH_RISCV_RVV)
+    __riscv_vse8_v_u8m1((uint8_t*)dst, __riscv_vle8_v_u8m1((const uint8_t*)src, 16), 16);
 #elif defined(__clang__)
     ZSTD_memmove(dst, src, 16);
 #else

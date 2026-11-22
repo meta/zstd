@@ -7,7 +7,7 @@
 # in the COPYING file in the root directory of this source tree).
 # ################################################################
 
-project(libzstd C ASM)
+project(libzstd C) # ASM language is conditionally enabled where supported
 
 set(CMAKE_INCLUDE_CURRENT_DIR TRUE)
 option(ZSTD_BUILD_STATIC "BUILD STATIC LIBRARIES" ON)
@@ -40,6 +40,7 @@ if (MSVC)
     add_compile_options(-DZSTD_DISABLE_ASM)
 else ()
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|AMD64.*|x86_64.*|X86_64.*" AND ${ZSTD_HAS_NOEXECSTACK})
+        enable_language(ASM)
         set(DecompressSources ${DecompressSources} ${LIBRARY_DIR}/decompress/huf_decompress_amd64.S)
     else()
         add_compile_options(-DZSTD_DISABLE_ASM)
@@ -97,7 +98,7 @@ if (ZSTD_LEGACY_SUPPORT)
             ${LIBRARY_LEGACY_DIR}/zstd_v07.h)
 endif ()
 
-if (MSVC AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
     set(MSVC_RESOURCE_DIR ${ZSTD_SOURCE_DIR}/build/VS2010/libzstd-dll)
     set(PlatformDependResources ${MSVC_RESOURCE_DIR}/libzstd-dll.rc)
 else()
@@ -108,7 +109,8 @@ endif ()
 # Our assembly expects to be compiled by a C compiler, and is only enabled for
 # __GNUC__ compatible compilers. Otherwise all the ASM code is disabled by
 # macros.
-if(NOT CMAKE_ASM_COMPILER STREQUAL CMAKE_C_COMPILER)
+if(NOT CMAKE_ASM_COMPILER STREQUAL CMAKE_C_COMPILER
+   OR NOT "${CMAKE_ASM_COMPILER_ARG1}" STREQUAL "${CMAKE_C_COMPILER_ARG1}")
     set_source_files_properties(${Sources} PROPERTIES LANGUAGE C)
 endif()
 
@@ -122,11 +124,9 @@ endmacro ()
 set(PUBLIC_INCLUDE_DIRS ${LIBRARY_DIR})
 set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /I \"${LIBRARY_DIR}\"")
 # Split project to static and shared libraries build
-set(library_targets)
 if (ZSTD_BUILD_SHARED)
     add_library(libzstd_shared SHARED ${Sources} ${Headers} ${PlatformDependResources})
     target_include_directories(libzstd_shared INTERFACE $<BUILD_INTERFACE:${PUBLIC_INCLUDE_DIRS}>)
-    list(APPEND library_targets libzstd_shared)
     if (ZSTD_MULTITHREAD_SUPPORT)
         target_compile_definitions(libzstd_shared PUBLIC ZSTD_MULTITHREAD)
         if (UNIX)
@@ -136,11 +136,12 @@ if (ZSTD_BUILD_SHARED)
     add_definition(libzstd_shared ZSTDLIB_VISIBLE)
     add_definition(libzstd_shared ZSTDERRORLIB_VISIBLE)
     add_definition(libzstd_shared ZDICTLIB_VISIBLE)
+    add_definition(libzstd_shared ZSTDLIB_STATIC_API)
+    add_definition(libzstd_shared ZDICTLIB_STATIC_API)
 endif ()
 if (ZSTD_BUILD_STATIC)
     add_library(libzstd_static STATIC ${Sources} ${Headers})
     target_include_directories(libzstd_static INTERFACE $<BUILD_INTERFACE:${PUBLIC_INCLUDE_DIRS}>)
-    list(APPEND library_targets libzstd_static)
     if (ZSTD_MULTITHREAD_SUPPORT)
         target_compile_definitions(libzstd_static PUBLIC ZSTD_MULTITHREAD)
         if (UNIX)
@@ -159,7 +160,6 @@ if (ZSTD_BUILD_SHARED AND NOT ZSTD_BUILD_STATIC)
     endif ()
     add_library(libzstd INTERFACE)
     target_link_libraries(libzstd INTERFACE libzstd_shared)
-    list(APPEND library_targets libzstd)
 endif ()
 if (ZSTD_BUILD_STATIC AND NOT ZSTD_BUILD_SHARED)
     if (BUILD_SHARED_LIBS)
@@ -167,7 +167,6 @@ if (ZSTD_BUILD_STATIC AND NOT ZSTD_BUILD_SHARED)
     endif ()
     add_library(libzstd INTERFACE)
     target_link_libraries(libzstd INTERFACE libzstd_static)
-    list(APPEND library_targets libzstd)
 endif ()
 if (ZSTD_BUILD_SHARED AND ZSTD_BUILD_STATIC)
     # If both ZSTD_BUILD_SHARED and ZSTD_BUILD_STATIC are set, which is the
@@ -176,11 +175,9 @@ if (ZSTD_BUILD_SHARED AND ZSTD_BUILD_STATIC)
     if (BUILD_SHARED_LIBS)
         add_library(libzstd INTERFACE)
         target_link_libraries(libzstd INTERFACE libzstd_shared)
-        list(APPEND library_targets libzstd)
     else ()
         add_library(libzstd INTERFACE)
         target_link_libraries(libzstd INTERFACE libzstd_static)
-        list(APPEND library_targets libzstd)
     endif ()
 endif ()
 
@@ -195,7 +192,7 @@ if (MSVC)
 endif ()
 
 # With MSVC static library needs to be renamed to avoid conflict with import library
-if (MSVC OR (WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT MINGW))
+if (MSVC OR (WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "Clang" AND NOT MINGW))
     set(STATIC_LIBRARY_BASE_NAME zstd_static)
 else ()
     set(STATIC_LIBRARY_BASE_NAME zstd)
@@ -274,19 +271,23 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libzstd.pc" DESTINATION "${CMAKE_INST
 # install target
 install(FILES ${PublicHeaders} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
-install(TARGETS ${library_targets}
-    EXPORT zstdExports
-    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    FRAMEWORK DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT runtime OPTIONAL
-    PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    )
+foreach(target_suffix IN ITEMS "_shared" "_static" "")
+    if(TARGET "libzstd${target_suffix}")
+        install(TARGETS "libzstd${target_suffix}"
+            EXPORT "zstdExports${target_suffix}"
+            INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            FRAMEWORK DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT runtime OPTIONAL
+            PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+            )
+    endif()
+endforeach()
 
 # uninstall target
-if (NOT TARGET uninstall)
+if (NOT ZSTD_IS_SUBPROJECT AND NOT TARGET uninstall)
     configure_file(
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
             "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"

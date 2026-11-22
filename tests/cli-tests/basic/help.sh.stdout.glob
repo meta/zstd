@@ -5,6 +5,7 @@ Usage: zstd *OPTIONS...* *INPUT... | -* *-o OUTPUT*
 
 Options:
   -o OUTPUT                     Write output to a single file, OUTPUT.
+  -c, --stdout                  Write to STDOUT (even if it is a console) and keep the INPUT file(s).
   -k, --keep                    Preserve INPUT file(s). *Default*
   --rm                          Remove INPUT file(s) after successful (de)compression to file.
 

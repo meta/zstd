@@ -126,11 +126,12 @@ the last one takes effect.
     This setting overwrites compression level if one was set previously.
     Similarly, if a compression level is set after `--fast`, it overrides it.
 * `-T#`, `--threads=#`:
-    Compress using `#` working threads (default: 1).
+    Compress using `#` working threads (default: between 1 and 4 depending on the number of logical CPU cores; see `ZSTD_NBTHREADS` below).
     If `#` is 0, attempt to detect and use the number of physical CPU cores.
     In all cases, the nb of threads is capped to `ZSTDMT_NBWORKERS_MAX`,
     which is either 64 in 32-bit mode, or 256 for 64-bit environments.
     This modifier does nothing if `zstd` is compiled without multithread support.
+    Note that memory usage increases with each thread.
 * `--single-thread`:
     Use a single thread for both I/O and compression.
     As compression is serialized with I/O, this can be slightly slower.
@@ -157,14 +158,14 @@ the last one takes effect.
     when combined with multiple worker threads (>=2).
 * `--long[=#]`:
     enables long distance matching with `#` `windowLog`, if `#` is not
-    present it defaults to `27`.
+    present it defaults to `27`. The highest possible value is 31.
     This increases the window size (`windowLog`) and memory usage for both the
     compressor and decompressor.
     This setting is designed to improve the compression ratio for files with
     long matches at a large distance.
 
-    Note: If `windowLog` is set to larger than 27, `--long=windowLog` or
-    `--memory=windowSize` needs to be passed to the decompressor.
+    Note: If `windowLog` is set to larger than 27, `--long=windowLog`,
+    `--max`, or `--memory=windowSize` needs to be passed to the decompressor.
 * `-D DICT`:
     use `DICT` as Dictionary to compress or decompress FILE(s)
 * `--patch-from FILE`:
@@ -209,7 +210,7 @@ the last one takes effect.
     Set a memory usage limit. By default, `zstd` uses 128 MiB for decompression
     as the maximum amount of memory the decompressor is allowed to use, but you can
     override this manually if need be in either direction (i.e. you can increase or
-    decrease it).
+    decrease it). This limit also applies when decompressing `.xz` and `.lzma` files.
 
     This is also used during compression when using with `--patch-from=`. In this case,
     this parameter overrides that maximum size allowed for a dictionary. (128 MiB).
@@ -281,10 +282,8 @@ the last one takes effect.
 * `--output-dir-flat DIR`:
     resulting files are stored into target `DIR` directory,
     instead of same directory as origin file.
-    Be aware that this command can introduce name collision issues,
-    if multiple files, from different directories, end up having the same name.
-    Collision resolution ensures first file with a given name will be present in `DIR`,
-    while in combination with `-f`, the last file will be present instead.
+    If multiple files, from different directories, would end up having the same name,
+    `zstd` reports an error and doesn't process any file.
 * `--output-dir-mirror DIR`:
     similar to `--output-dir-flat`,
     the output files are stored underneath target `DIR` directory,
@@ -293,8 +292,6 @@ the last one takes effect.
     If input directory contains "..", the files in this directory will be ignored.
     If input directory is an absolute directory (i.e. "/var/tmp/abc"),
     it will be stored into the "output-dir/var/tmp/abc".
-    If there are multiple input files or directories,
-    name collision resolution will follow the same rules as `--output-dir-flat`.
 * `--format=FORMAT`:
     compress and decompress in other formats. If compiled with
     support, zstd can compress to or decompress from other compression algorithm
@@ -347,7 +344,8 @@ If the value of `ZSTD_CLEVEL` is not a valid integer, it will be ignored with a 
 
 `ZSTD_NBTHREADS` can be used to set the number of threads `zstd` will attempt to use during compression.
 If the value of `ZSTD_NBTHREADS` is not a valid unsigned integer, it will be ignored with a warning message.
-`ZSTD_NBTHREADS` has a default value of `max(1, min(4, nbCores/4))`, and is capped at ZSTDMT_NBWORKERS_MAX==200.
+`ZSTD_NBTHREADS` has a default value of `max(1, min(4, nbLogicalCores/4))`, and is capped at `ZSTDMT_NBWORKERS_MAX`,
+which is either 64 in 32-bit mode, or 256 for 64-bit environments.
 `zstd` must be compiled with multithread support for this variable to have any effect.
 
 They can both be overridden by corresponding command line arguments:
@@ -384,8 +382,8 @@ The list of available _options_:
     The minimum _wlog_ is 10 (1 KiB) and the maximum is 30 (1 GiB) on 32-bit
     platforms and 31 (2 GiB) on 64-bit platforms.
 
-    Note: If `windowLog` is set to larger than 27, `--long=windowLog` or
-    `--memory=windowSize` needs to be passed to the decompressor.
+    Note: If `windowLog` is set to larger than 27, `--long=windowLog`,
+    `--max`, or `--memory=windowSize` needs to be passed to the decompressor.
 
 - `hashLog`=_hlog_, `hlog`=_hlog_:
     Specify the maximum number of bits for a hash table.
@@ -673,7 +671,7 @@ Note that results are very dependent on the content being compressed.
 It's possible to pass multiple files to the benchmark, and even a directory with `-r DIRECTORY`.
 When no `FILE` is provided, the benchmark will use a procedurally generated `lorem ipsum` text.
 
-Benchmarking will employ `max(1, min(4, nbCores/4))` worker threads by default in order to match the behavior of the normal CLI I/O.
+Benchmarking will employ 1 worker thread by default. Use `-T#` to benchmark with more worker threads.
 
 * `-b#`:
     benchmark file(s) using compression level #

@@ -123,7 +123,12 @@ ZSTDLIB_API size_t ZSTD_seekable_writeSeekTable(ZSTD_frameLog* fl, ZSTD_outBuffe
 *  A ZSTD_seekable object is required to tracking the seekTable.
 *
 *  Call ZSTD_seekable_init* to initialize a ZSTD_seekable object with the
-*  the seek table provided in the input.
+*  seek table provided in the input. These functions may also be called again
+*  to reset the object for a new input. Resetting discards the previous input
+*  and seek table, even if initialization fails. Before the first successful
+*  initialization, or after a failed initialization, the object has no frames
+*  and decompression returns an initialization-missing error. The object may
+*  be initialized again or freed.
 *  There are three modes for ZSTD_seekable_init:
 *    - ZSTD_seekable_initBuff() : An in-memory API.  The data contained in
 *      `src` should be the entire seekable file, including the seek table.
@@ -152,9 +157,14 @@ ZSTDLIB_API size_t ZSTD_seekable_writeSeekTable(ZSTD_frameLog* fl, ZSTD_outBuffe
 *  consecutive range of data, it will efficiently retain the decompressor object
 *  and avoid redecompressing frame prefixes.  The return value is the number of
 *  bytes decompressed, or an error code checkable with ZSTD_isError().
+*  It is smaller than `dstSize` only when the data ends before
+*  `offset + dstSize`, and it is 0 when `offset` is the end of the data.
+*  An `offset` past the end of the data is an error.
+*  On error, saved decompression state is discarded; a later call restarts
+*  from the beginning of its selected frame.
 *
 *  The seek table access functions can be used to obtain the data contained
-*  in the seek table.  If frameIndex is larger than the value returned by
+*  in the seek table.  If frameIndex is greater than or equal to
 *  ZSTD_seekable_getNumFrames(), they will return error codes checkable with
 *  ZSTD_isError().  Note that since the offset access functions return
 *  unsigned long long instead of size_t, in this case they will instead return

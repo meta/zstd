@@ -13,6 +13,8 @@ foo.gz
 
 minigzip
 minigzip_zstd
+gzfinishtest
+gzfinishtest_zstd
 example
 example_zstd
 fitblk

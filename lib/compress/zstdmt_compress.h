@@ -32,8 +32,8 @@
 #ifndef ZSTDMT_JOBSIZE_MIN   /* a different value can be selected at compile time */
 #  define ZSTDMT_JOBSIZE_MIN (512 KB)
 #endif
-#define ZSTDMT_JOBLOG_MAX   (MEM_32bits() ? 29 : 30)
-#define ZSTDMT_JOBSIZE_MAX  (MEM_32bits() ? (512 MB) : (1024 MB))
+#define ZSTDMT_JOBLOG_MAX   (MEM_32bits() ? 28 : 30)
+#define ZSTDMT_JOBSIZE_MAX  (MEM_32bits() ? (256 MB) : (1024 MB))
 
 
 /* ========================================================
@@ -49,11 +49,22 @@ ZSTDMT_CCtx* ZSTDMT_createCCtx_advanced(unsigned nbWorkers,
 					ZSTD_threadPool *pool);
 size_t ZSTDMT_freeCCtx(ZSTDMT_CCtx* mtctx);
 
+/*! ZSTDMT_waitForPendingJobs() :
+ *  Waits for the jobs of an unfinished frame to complete, then releases their resources.
+ *  Must be called before freeing anything these jobs reference, such as the dictionary.
+ *  Does nothing if the last frame was completed. */
+void ZSTDMT_waitForPendingJobs(ZSTDMT_CCtx* mtctx);
+
 size_t ZSTDMT_sizeof_CCtx(ZSTDMT_CCtx* mtctx);
 
 /* ===   Streaming functions   === */
 
 size_t ZSTDMT_nextInputSizeHint(const ZSTDMT_CCtx* mtctx);
+
+/*! ZSTDMT_isFrameEnded() :
+ *  @return 1 once the last job of the current frame is created :
+ *  remaining input then belongs to the next frame. */
+unsigned ZSTDMT_isFrameEnded(const ZSTDMT_CCtx* mtctx);
 
 /*! ZSTDMT_initCStream_internal() :
  *  Private use only. Init streaming operation.

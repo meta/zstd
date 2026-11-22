@@ -17,7 +17,7 @@ jobs:
         image: fbopensource/zstd-circleci-primary:0.0.1
         options: --entrypoint /bin/bash
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - name: Install Dependencies
       run: |
         sudo apt-get update
@@ -40,11 +40,11 @@ jobs:
         image: fbopensource/zstd-circleci-primary:0.0.1
         options: --entrypoint /bin/bash
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install gcc-powerpc-linux-gnu gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu libc6-dev-ppc64-powerpc-cross libcurl4-gnutls-dev lib64gcc-13-dev-powerpc-cross
+        sudo apt-get install gcc-powerpc-linux-gnu gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu libc6-dev-ppc64-powerpc-cross libcurl4-gnutls-dev gcc-multilib-powerpc-linux-gnu
     - name: gnu90 build
       run: make gnu90build && make clean
     - name: gnu99 build
@@ -73,9 +73,9 @@ jobs:
     env:
       CIRCLE_ARTIFACTS: "/tmp/circleci-artifacts"
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - name: restore_cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         key: regression-cache-{{ checksum "tests/regression/data.c" }}-v0
         path: tests/regression/cache
@@ -99,6 +99,6 @@ jobs:
         echo "      are still good, copy it into the repo and commit it."
         echo "> diff tests/regression/results.csv $CIRCLE_ARTIFACTS/results.csv"
         diff tests/regression/results.csv $CIRCLE_ARTIFACTS/results.csv
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7.0.2
       with:
         path: "/tmp/circleci-artifacts"

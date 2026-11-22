@@ -35,8 +35,10 @@ if(ZSTD_BUILD_CONTRIB)
 endif()
 
 # Clean-all target for thorough cleanup
-add_custom_target(clean-all
-    COMMAND ${CMAKE_BUILD_TOOL} clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/
-    COMMENT "Performing complete clean including build directory"
-)
+if(NOT ZSTD_IS_SUBPROJECT)
+    add_custom_target(clean-all
+        COMMAND ${CMAKE_BUILD_TOOL} clean
+        COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/
+        COMMENT "Performing complete clean including build directory"
+    )
+endif()

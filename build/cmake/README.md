@@ -7,6 +7,15 @@ variables.
 
 ## How to build
 
+You can configure the project from the repository root thanks to the forwarding
+`CMakeLists.txt`:
+```sh
+cmake -S . -B build-cmake
+cmake --build build-cmake
+```
+The historical workflow that starts configuration from `build/cmake` continues
+to work as described below.
+
 As cmake doesn't support command like `cmake clean`, it's recommended to perform an "out of source build".
 To do this, you can create a new directory and build in it:
 ```sh
@@ -54,6 +63,9 @@ cmake -B build -G Xcode -DCMAKE_TOOLCHAIN_FILE=<Path To ios.toolchain.cmake> -DP
 ### how to use it with CMake FetchContent
 
 For all options available, you can see it on <https://github.com/facebook/zstd/blob/dev/build/cmake/lib/CMakeLists.txt>
+
+To override automatic subproject detection, use `set(ZSTD_IS_SUBPROJECT ON)`(or `OFF`) before calling `add_subdirectory()` or `FetchContent_MakeAvailable()`.
+
 ```cmake
 include(FetchContent)
 

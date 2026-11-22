@@ -2,8 +2,8 @@
 # ZSTD Build Options Configuration
 # ################################################################
 
-# Legacy support configuration
-option(ZSTD_LEGACY_SUPPORT "Enable legacy format support" ON)
+# Legacy support configuration (disabled by default)
+option(ZSTD_LEGACY_SUPPORT "Enable legacy format support" OFF)
 
 if(ZSTD_LEGACY_SUPPORT)
     message(STATUS "ZSTD_LEGACY_SUPPORT enabled")

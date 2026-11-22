@@ -16,6 +16,12 @@ datagen() {
     "$DATAGEN_BIN" "$@"
 }
 
+# zstd is an alias rather than a function: POSIX doesn't require "VAR=value function"
+# to export VAR to the commands run by the function.
+# bash only expands aliases in a script in POSIX mode (started as sh), or with expand_aliases.
+# Without it (e.g. `bash playTests.sh`), zstd would silently run the zstd found in PATH.
+# shellcheck disable=SC2039,SC3044 # shopt only runs in bash
+if [ -n "${BASH_VERSION-}" ]; then shopt -s expand_aliases; fi
 alias zstd='$EXE_PREFIX $ZSTD_BIN'
 
 sudoZstd() {
@@ -111,6 +117,15 @@ case "$OS" in
     DEVDEVICE="NUL"
     ;;
 esac
+
+# Native Windows builds (MSVC, MinGW) define _WIN32; Cygwin builds don't
+isNativeWindows=false
+if [ "$isWindows" = true ]; then
+  case "$UNAME" in
+    CYGWIN*) ;;
+    *) isNativeWindows=true ;;
+  esac
+fi
 
 case "$UNAME" in
   Darwin) MD5SUM="md5 -r" ;;
@@ -240,6 +255,17 @@ test -f tmpOut   # file must be created
 rm -f tmpCompressed
 zstd tmp -o tmpOut -c > tmpCompressed
 test -f tmpCompressed   # file must be created
+
+println "test : refuse output overwriting input through another spelling"
+cp tmp tmpRef
+zstd -f tmp -o ./tmp && die "should have refused to overwrite input through ./ prefix"
+cmp tmp tmpRef || die "refused ./ output modified the input file"
+if [ "$isWindows" = true ] ; then
+    println "test : refuse output overwriting input through a different case"
+    zstd -f tmp -o TMP && die "should have refused to overwrite input through a different case"
+    cmp tmp tmpRef || die "refused differently-cased output modified the input file"
+fi
+rm -f tmpRef
 
 println "test : forgotten argument"
 cp tmp tmp2
@@ -442,6 +468,34 @@ zstd -c -r < tmp > tmp.zst
 mkdir -p tmpEmptyDir
 zstd -r tmpEmptyDir
 rm -rf tmpEmptyDir
+
+println "test : directory links are not followed by -r"
+# remove leftovers of a previous failed run
+if [ "$isWindows" = true ]; then cmd //c "rmdir tmpLinkDir\tmpLink" 2> /dev/null || :; fi
+rm -rf tmpLinkDir tmpOutside tmpStdErr
+mkdir -p tmpLinkDir tmpOutside
+echo "inner" > tmpLinkDir/tmpInner
+echo "victim" > tmpOutside/tmpVictim
+if [ "$isWindows" = true ]; then
+  # junctions don't require the privileges that symlinks do
+  (cd tmpLinkDir && cmd //c "mklink /J tmpLink ..\tmpOutside")
+else
+  ln -s ../tmpOutside tmpLinkDir/tmpLink
+fi
+zstd -r --rm tmpLinkDir 2> tmpStdErr
+# remove the link before asserting, so a failing test never leaves a live
+# link behind for the later "rm -rf tmp*" cleanups to encounter
+if [ "$isWindows" = true ]; then
+  cmd //c "rmdir tmpLinkDir\tmpLink"
+else
+  rm -f tmpLinkDir/tmpLink
+fi
+$GREP "symbolic link" tmpStdErr
+test -f tmpLinkDir/tmpInner.zst # file inside the tree was compressed
+test ! -f tmpLinkDir/tmpInner # ... and removed (--rm)
+test -f tmpOutside/tmpVictim # file outside the tree was left untouched
+test ! -f tmpOutside/tmpVictim.zst # ... not compressed through the link
+rm -rf tmpLinkDir tmpOutside tmpStdErr
 
 
 println "\n===>  file removal"
@@ -800,6 +854,25 @@ zstd -f --filelist=tmp_symLink
 test -f tmp2.zst
 test -f tmp1.zst
 
+println "test : file list with CR at the end of lines, --filelist=FILE"
+# The list is read in binary mode. Native Windows builds drop the CR of CRLF line endings;
+# other builds keep it, since CR is a valid filename character there.
+rm -f *.zst
+if [ "$isNativeWindows" = true ]; then
+    printf 'tmp1\r\ntmp2\r\n' > tmp_crList
+    zstd -f --filelist=tmp_crList
+    test -f tmp1.zst
+    test -f tmp2.zst
+else
+    CR=$(printf '\r')
+    echo "CR" > "tmpCR$CR"
+    printf 'tmpCR\r\n' > tmp_crList
+    zstd -f --filelist=tmp_crList
+    test -f "tmpCR$CR.zst"
+    rm -f "tmpCR$CR" "tmpCR$CR.zst"
+fi
+rm -f tmp_crList
+
 println "test : compress multiple files reading them from multiple files, --filelist=FILE"
 rm -f *.zst
 println "Hello world!, file3" > tmp3
@@ -984,6 +1057,20 @@ zstd world.tmp hello.tmp -f
 test -f world.tmp.zst  # symbolic link should have been compressed with --force
 rm -f hello.tmp world.tmp world2.tmp hello.tmp.zst world.tmp.zst
 
+println "test : output is not written through a dangling symbolic link"
+rm -f hello.tmp hello.tmp.zst tmpLinkTarget
+println "hello world" > hello.tmp
+zstd -q --rm hello.tmp
+ln -s tmpLinkTarget hello.tmp
+zstd -q -d hello.tmp.zst && die "output should not be written through a dangling link"
+test ! -e tmpLinkTarget  # link target should not have been created
+zstd -q -d -f hello.tmp.zst  # --force replaces the link
+test ! -L hello.tmp
+test -f hello.tmp
+test ! -e tmpLinkTarget
+zstd -q -d hello.tmp.zst -o /dev/null  # existing non-regular files are still opened
+rm -f hello.tmp hello.tmp.zst tmpLinkTarget
+
 fi
 
 
@@ -1075,13 +1162,19 @@ cat tmp | zstd -14 -f --size-hint=11050 | zstd -t  # slightly too high
 cat tmp | zstd -14 -f --size-hint=10950 | zstd -t  # slightly too low
 cat tmp | zstd -14 -f --size-hint=22000 | zstd -t  # considerably too high
 cat tmp | zstd -14 -f --size-hint=5500  | zstd -t  # considerably too low
-println "test : allows and interprets K,KB,KiB,M,MB and MiB suffix"
+println "test : allows and interprets K,KB,KiB,M,MB,MiB,G,GB and GiB suffix"
 cat tmp | zstd -14 -f --size-hint=11K | zstd -t
 cat tmp | zstd -14 -f --size-hint=11KB | zstd -t
 cat tmp | zstd -14 -f --size-hint=11KiB | zstd -t
 cat tmp | zstd -14 -f --size-hint=1M  | zstd -t
 cat tmp | zstd -14 -f --size-hint=1MB  | zstd -t
 cat tmp | zstd -14 -f --size-hint=1MiB  | zstd -t
+cat tmp | zstd -14 -f --size-hint=1G  | zstd -t
+cat tmp | zstd -14 -f --size-hint=1GB  | zstd -t
+cat tmp | zstd -14 -f --size-hint=1GiB  | zstd -t
+cat tmp | zstd -14 -f --size-hint=3G  | zstd -t
+cat tmp | zstd -14 -f --size-hint=3GB  | zstd -t
+cat tmp | zstd -14 -f --size-hint=3GiB  | zstd -t
 
 
 println "\n===>  dictionary tests "
@@ -1302,6 +1395,11 @@ zstd -f tmp1
 zstd -b -d -i0 tmp1.zst
 println "benchmark can fail - decompression on invalid data"
 zstd -b -d -i0 tmp1 && die "invalid .zst data => benchmark should have failed"
+println "benchmark decompression of several frames whose content is smaller than the frame"
+printf 'a' > tmpbd1 ; printf 'b' > tmpbd2 ; printf 'c' > tmpbd3
+zstd -qf tmpbd1 tmpbd2 tmpbd3
+zstd -b -d -i0 tmpbd1.zst tmpbd2.zst tmpbd3.zst
+rm -f tmpbd1 tmpbd2 tmpbd3 tmpbd1.zst tmpbd2.zst tmpbd3.zst
 
 GZIPMODE=1
 zstd --format=gzip -V || GZIPMODE=0
@@ -1417,6 +1515,14 @@ if [ $LZMAMODE -eq 1 ]; then
     cat tmp.xz tmp.lzma tmp.zst tmp.lzma tmp.xz tmp.zst | zstd -d -f -o tmp
     truncateLastByte tmp.xz | zstd -t > $INTOVOID && die "incomplete frame not detected !"
     truncateLastByte tmp.lzma | zstd -t > $INTOVOID && die "incomplete frame not detected !"
+    # --memory also limits xz/lzma decoding (level 3 : 4 MiB dictionary, needs 5 MB)
+    zstd -f -3 --format=xz tmp -o tmp3.xz
+    zstd -f -3 --format=lzma tmp -o tmp3.lzma
+    zstd -t --memory=1MB tmp3.xz 2>tmplog && die "--memory not enforced for xz"
+    $GREP "Use --memory=5MB" tmplog
+    zstd -t --memory=1MB tmp3.lzma 2>tmplog && die "--memory not enforced for lzma"
+    $GREP "Use --memory=5MB" tmplog
+    zstd -t --memory=5MB tmp3.xz tmp3.lzma
     rm -f tmp*
 else
     println "xz mode not supported"
@@ -1452,6 +1558,9 @@ if [ $LZ4MODE -eq 1 ]; then
     zstd -f tmp
     cat tmp.lz4 tmp.zst tmp.lz4 tmp.zst | zstd -d -f -o tmp
     truncateLastByte tmp.lz4 | zstd -t > $INTOVOID && die "incomplete frame not detected !"
+    checkSize=$(zstd -c --format=lz4 --check tmp | wc -c)
+    noCheckSize=$(zstd -c --format=lz4 --no-check tmp | wc -c)
+    [ "$checkSize" -eq "$((noCheckSize + 4))" ] || die "--check did not add the lz4 content checksum"
     rm -f tmp*
 else
     println "\nlz4 mode not supported"
@@ -1631,6 +1740,11 @@ rm -f $TEST_DATA_FILE
 rm -f $FULL_COMPRESSED_FILE
 rm -f $TRUNCATED_COMPRESSED_FILE
 
+println "test : detect skippable frame larger than file "
+printf '\120\052\115\030\370\377\377\377payload' > tmp_skippable.zst  # skippable magic, Frame_Size 0xFFFFFFF8
+zstd --list tmp_skippable.zst && die "-l must fail on truncated skippable frame"
+rm -f tmp_skippable.zst
+
 println "\n===>  zstd --list/-l errors when presented with stdin / no files"
 zstd -l && die "-l must fail on empty list of files"
 zstd -l - && die "-l does not work on stdin"
@@ -1684,6 +1798,8 @@ roundTripTest -g1M -P50 "1 --single-thread --long=29" " --memory=512MB"
 roundTripTest -g1M -P50 "1 --single-thread --long=29 --zstd=wlog=28" " --memory=256MB"
 roundTripTest -g1M -P50 "1 --single-thread --long=29" " --long=28 --memory=512MB"
 roundTripTest -g1M -P50 "1 --single-thread --long=29" " --zstd=wlog=28 --memory=512MB"
+roundTripTest -g1M -P50 "1 --single-thread --long=30" " --memory=1GB"
+roundTripTest -g1M -P50 "1 --single-thread --long=30" " --zstd=wlog=29 --memory=1GB"
 
 
 if [ "$ZSTD_LIB_EXCLUDE_COMPRESSORS_DFAST_AND_UP" -ne "1" ]; then
@@ -1901,10 +2017,10 @@ println "- Create second (different) dictionary"
 zstd -T0 --train-cover=k=56,d=8 "$TESTDIR"/*.c "$PRGDIR"/*.c "$PRGDIR"/*.h -o tmpDictC
 zstd -d tmp.zst -D tmpDictC -fo result && die "wrong dictionary not detected!"
 println "- Create dictionary using shrink-dict flag"
-zstd -T0 --train-cover=steps=256,shrink "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict
-zstd -T0 --train-cover=steps=256,shrink=1 "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict1
-zstd -T0 --train-cover=steps=256,shrink=5 "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict2
-zstd -T0 --train-cover=shrink=5,steps=256 "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict3
+zstd -T0 --train-cover=steps=7,shrink "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict
+zstd -T0 --train-cover=steps=7,shrink=1 "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict1
+zstd -T0 --train-cover=steps=7,shrink=5 "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict2
+zstd -T0 --train-cover=shrink=5,steps=7 "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpShrinkDict3
 println "- Create dictionary with short dictID"
 zstd -T0 --train-cover=k=46,d=8,split=80 "$TESTDIR"/*.c "$PRGDIR"/*.c --dictID=1 -o tmpDict1
 cmp tmpDict tmpDict1 && die "dictionaries should have different ID !"
