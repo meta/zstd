@@ -373,7 +373,7 @@ ifeq (,$(filter Windows%,$(TARGET_SYSTEM)))
 	$(LN) -sf $(LIBZSTD) $(DESTDIR)$(SHLIBDIR)/libzstd.$(SHARED_EXT_MAJOR)
 	$(LN) -sf $(LIBZSTD) $(DESTDIR)$(SHLIBDIR)/libzstd.$(SHARED_EXT)
 else
-  [ -e $(DESTDIR)$(LIBDIR) ] || $(INSTALL) -d -m 755 $(DESTDIR)$(LIBDIR)/
+	[ -e $(DESTDIR)$(LIBDIR) ] || $(INSTALL) -d -m 755 $(DESTDIR)$(LIBDIR)/
 	$(INSTALL_PROGRAM) dll/libzstd.dll.a $(DESTDIR)$(LIBDIR)
 endif
 
