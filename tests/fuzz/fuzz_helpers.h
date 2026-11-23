@@ -66,6 +66,7 @@ void* FUZZ_malloc(size_t size);
 /**
  * malloc except returns random pointer for zero sized data and FUZZ_ASSERT
  * that malloc doesn't fail.
+ * WARNING: Only free the returned pointer if size > 0!
  */
 void* FUZZ_malloc_rand(size_t size,  FUZZ_dataProducer_t *producer);
 

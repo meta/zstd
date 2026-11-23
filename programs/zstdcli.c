@@ -44,10 +44,10 @@
 #endif
 
 #ifndef ZSTDCLI_NBTHREADS_DEFAULT
-#define ZSTDCLI_NBTHREADS_DEFAULT MAX(1, MIN(4, UTIL_countLogicalCores() / 4))
+#define ZSTDCLI_NBTHREADS_DEFAULT (unsigned)(MAX(1, MIN(4, UTIL_countLogicalCores() / 4)))
 #endif
 
-
+static unsigned init_nbWorkers(unsigned defaultNbWorkers);
 
 /*-************************************
 *  Constants
@@ -77,7 +77,9 @@
 #define MB *(1 <<20)
 #define GB *(1U<<30)
 
-#define DISPLAY_LEVEL_DEFAULT 2
+#ifndef ZSTD_DISPLAY_LEVEL_DEFAULT
+# define ZSTD_DISPLAY_LEVEL_DEFAULT 2
+#endif
 
 static const char*    g_defaultDictName = "dictionary";
 static const unsigned g_defaultMaxDictSize = 110 KB;
@@ -94,6 +96,8 @@ static U32 g_ldmBucketSizeLog = LDM_PARAM_DEFAULT;
 
 
 #define DEFAULT_ACCEL 1
+#define NBWORKERS_AUTOCPU 0
+#define NBWORKERS_UNSET UINT_MAX
 
 typedef enum { cover, fastCover, legacy } dictType;
 
@@ -102,7 +106,7 @@ typedef enum { cover, fastCover, legacy } dictType;
 **************************************/
 #undef DISPLAYLEVEL
 #define DISPLAYLEVEL(l, ...) { if (g_displayLevel>=l) { DISPLAY(__VA_ARGS__); } }
-static int g_displayLevel = DISPLAY_LEVEL_DEFAULT;   /* 0 : no display,  1: errors,  2 : + result + interaction + warnings,  3 : + progression,  4 : + information */
+static int g_displayLevel = ZSTD_DISPLAY_LEVEL_DEFAULT;   /* 0 : no display,  1: errors,  2 : + result + interaction + warnings,  3 : + progression,  4 : + information */
 
 
 /*-************************************
@@ -145,8 +149,9 @@ static void usage(FILE* f, const char* programName)
     DISPLAY_F(f, "Usage: %s [OPTIONS...] [INPUT... | -] [-o OUTPUT]\n\n", programName);
     DISPLAY_F(f, "Options:\n");
     DISPLAY_F(f, "  -o OUTPUT                     Write output to a single file, OUTPUT.\n");
+    DISPLAY_F(f, "  -c, --stdout                  Write to STDOUT (even if it is a console) and keep the INPUT file(s).\n");
     DISPLAY_F(f, "  -k, --keep                    Preserve INPUT file(s). [Default] \n");
-    DISPLAY_F(f, "  --rm                          Remove INPUT file(s) after successful (de)compression.\n");
+    DISPLAY_F(f, "  --rm                          Remove INPUT file(s) after successful (de)compression to file.\n");
 #ifdef ZSTD_GZCOMPRESS
     if (exeNameMatch(programName, ZSTD_GZ)) {     /* behave like gzip */
         DISPLAY_F(f, "  -n, --no-name                 Do not store original filename when compressing.\n\n");
@@ -179,7 +184,6 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("\n");
     usage(stdout, programName);
     DISPLAYOUT("Advanced options:\n");
-    DISPLAYOUT("  -c, --stdout                  Write to STDOUT (even if it is a console) and keep the INPUT file(s).\n\n");
 
     DISPLAYOUT("  -v, --verbose                 Enable verbose output; pass multiple times to increase verbosity.\n");
     DISPLAYOUT("  -q, --quiet                   Suppress warnings; pass twice to suppress errors.\n");
@@ -221,6 +225,7 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("\n");
     DISPLAYOUT("Advanced compression options:\n");
     DISPLAYOUT("  --ultra                       Enable levels beyond %i, up to %i; requires more memory.\n", ZSTDCLI_CLEVEL_MAX, ZSTD_maxCLevel());
+    DISPLAYOUT("  --max                         Enable the maximum compression settings.\n");
     DISPLAYOUT("  --fast[=#]                    Use to very fast compression levels. [Default: %u]\n", 1);
 #ifdef ZSTD_GZCOMPRESS
     if (exeNameMatch(programName, ZSTD_GZ)) {     /* behave like gzip */
@@ -229,14 +234,15 @@ static void usageAdvanced(const char* programName)
 #endif
     DISPLAYOUT("  --adapt                       Dynamically adapt compression level to I/O conditions.\n");
     DISPLAYOUT("  --long[=#]                    Enable long distance matching with window log #. [Default: %u]\n", g_defaultMaxWindowLog);
-    DISPLAYOUT("  --patch-from=REF              Use REF as the reference point for Zstandard's diff engine. \n\n");
+    DISPLAYOUT("  --patch-from=REF              Use REF as the reference point for Zstandard's diff engine. \n");
+    DISPLAYOUT("  --patch-apply                 Equivalent for `-d --patch-from` \n\n");
 # ifdef ZSTD_MULTITHREAD
-    DISPLAYOUT("  -T#                           Spawn # compression threads. [Default: 1; pass 0 for core count.]\n");
+    DISPLAYOUT("  -T#                           Spawn # compression threads. [Default: %u; pass 0 for core count.]\n", init_nbWorkers(ZSTDCLI_NBTHREADS_DEFAULT));
     DISPLAYOUT("  --single-thread               Share a single thread for I/O and compression (slightly different than `-T1`).\n");
     DISPLAYOUT("  --auto-threads={physical|logical}\n");
     DISPLAYOUT("                                Use physical/logical cores when using `-T0`. [Default: Physical]\n\n");
-    DISPLAYOUT("  -B#                           Set job size to #. [Default: 0 (automatic)]\n");
-    DISPLAYOUT("  --rsyncable                   Compress using a rsync-friendly method (`-B` sets block size). \n");
+    DISPLAYOUT("  --jobsize=#                   Set job size to #. [Default: 0 (automatic)]\n");
+    DISPLAYOUT("  --rsyncable                   Compress using a rsync-friendly method (`--jobsize=#` sets unit size). \n");
     DISPLAYOUT("\n");
 # endif
     DISPLAYOUT("  --exclude-compressed          Only compress files that are not already compressed.\n\n");
@@ -261,7 +267,7 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("  --format=lzma                 Compress files to the `.lzma` format.\n");
 #endif
 #ifdef ZSTD_LZ4COMPRESS
-    DISPLAYOUT( "  --format=lz4                 Compress files to the `.lz4` format.\n");
+    DISPLAYOUT( "  --format=lz4                  Compress files to the `.lz4` format.\n");
 #endif
 #endif  /* !ZSTD_NOCOMPRESS */
 
@@ -307,7 +313,7 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("  -b#                           Perform benchmarking with compression level #. [Default: %d]\n", ZSTDCLI_CLEVEL_DEFAULT);
     DISPLAYOUT("  -e#                           Test all compression levels up to #; starting level is `-b#`. [Default: 1]\n");
     DISPLAYOUT("  -i#                           Set the minimum evaluation to time # seconds. [Default: 3]\n");
-    DISPLAYOUT("  -B#                           Cut file into independent chunks of size #. [Default: No chunking]\n");
+    DISPLAYOUT("  --split=#                     Split input into independent chunks of size #. [Default: No chunking]\n");
     DISPLAYOUT("  -S                            Output one benchmark result per input file. [Default: Consolidated result]\n");
     DISPLAYOUT("  -D dictionary                 Benchmark using dictionary \n");
     DISPLAYOUT("  --priority=rt                 Set process priority to real-time.\n");
@@ -344,7 +350,7 @@ static void errorOut(const char* msg)
 
 /*! readU32FromCharChecked() :
  * @return 0 if success, and store the result in *value.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix.
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  * @return 1 if an overflow error occurs */
 static int readU32FromCharChecked(const char** stringPtr, unsigned* value)
@@ -359,15 +365,22 @@ static int readU32FromCharChecked(const char** stringPtr, unsigned* value)
         if (result < last) return 1; /* overflow error */
         (*stringPtr)++ ;
     }
-    if ((**stringPtr=='K') || (**stringPtr=='M')) {
-        unsigned const maxK = ((unsigned)(-1)) >> 10;
-        if (result > maxK) return 1; /* overflow error */
-        result <<= 10;
-        if (**stringPtr=='M') {
-            if (result > maxK) return 1; /* overflow error */
-            result <<= 10;
+    if ((**stringPtr=='K') || (**stringPtr=='M') || (**stringPtr=='G')) {
+        switch (**stringPtr) {
+            case 'K':
+                if (result > (((unsigned)-1) >> 10)) return 1; /* overflow error */
+                result <<= 10;
+                break;
+            case 'M':
+                if (result > (((unsigned)-1) >> 20)) return 1; /* overflow error */
+                result <<= 20;
+                break;
+            case 'G':
+                if (result > (((unsigned)-1) >> 30)) return 1; /* overflow error */
+                result <<= 30;
+                break;
         }
-        (*stringPtr)++;  /* skip `K` or `M` */
+        (*stringPtr)++;  /* skip `K`, `M` or `G` */
         if (**stringPtr=='i') (*stringPtr)++;
         if (**stringPtr=='B') (*stringPtr)++;
     }
@@ -377,7 +390,7 @@ static int readU32FromCharChecked(const char** stringPtr, unsigned* value)
 
 /*! readU32FromChar() :
  * @return : unsigned integer value read from input in `char` format.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix.
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  *  Note : function will exit() program if digit sequence overflows */
 static unsigned readU32FromChar(const char** stringPtr) {
@@ -389,7 +402,7 @@ static unsigned readU32FromChar(const char** stringPtr) {
 
 /*! readIntFromChar() :
  * @return : signed integer value read from input in `char` format.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix.
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  *  Note : function will exit() program if digit sequence overflows */
 static int readIntFromChar(const char** stringPtr) {
@@ -401,12 +414,13 @@ static int readIntFromChar(const char** stringPtr) {
         sign = -1;
     }
     if (readU32FromCharChecked(stringPtr, &result)) { errorOut(errorMsg); }
+    if (result > (unsigned)INT_MAX) { errorOut(errorMsg); }
     return (int) result * sign;
 }
 
 /*! readSizeTFromCharChecked() :
  * @return 0 if success, and store the result in *value.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix.
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  * @return 1 if an overflow error occurs */
 static int readSizeTFromCharChecked(const char** stringPtr, size_t* value)
@@ -421,15 +435,22 @@ static int readSizeTFromCharChecked(const char** stringPtr, size_t* value)
         if (result < last) return 1; /* overflow error */
         (*stringPtr)++ ;
     }
-    if ((**stringPtr=='K') || (**stringPtr=='M')) {
-        size_t const maxK = ((size_t)(-1)) >> 10;
-        if (result > maxK) return 1; /* overflow error */
-        result <<= 10;
-        if (**stringPtr=='M') {
-            if (result > maxK) return 1; /* overflow error */
-            result <<= 10;
+    if ((**stringPtr=='K') || (**stringPtr=='M') || (**stringPtr=='G')) {
+        switch (**stringPtr) {
+            case 'K':
+                if (result > (((size_t)-1) >> 10)) return 1; /* overflow error */
+                result <<= 10;
+                break;
+            case 'M':
+                if (result > (((size_t)-1) >> 20)) return 1; /* overflow error */
+                result <<= 20;
+                break;
+            case 'G':
+                if (result > (((size_t)-1) >> 30)) return 1; /* overflow error */
+                result <<= 30;
+                break;
         }
-        (*stringPtr)++;  /* skip `K` or `M` */
+        (*stringPtr)++;  /* skip `K`, `M` or `G` */
         if (**stringPtr=='i') (*stringPtr)++;
         if (**stringPtr=='B') (*stringPtr)++;
     }
@@ -439,7 +460,7 @@ static int readSizeTFromCharChecked(const char** stringPtr, size_t* value)
 
 /*! readSizeTFromChar() :
  * @return : size_t value read from input in `char` format.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  allows and interprets K, KB, KiB, M, MB, MiB, G, GB and GiB suffix.
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  *  Note : function will exit() program if digit sequence overflows */
 static size_t readSizeTFromChar(const char** stringPtr) {
@@ -587,6 +608,15 @@ static ZDICT_fastCover_params_t defaultFastCoverParams(void)
 #endif
 
 
+#ifdef ZSTD_NOCOMPRESS
+/* symbols from compression library are not defined and should not be invoked */
+# define MINCLEVEL  -99
+# define MAXCLEVEL   22
+#else
+# define MINCLEVEL  ZSTD_minCLevel()
+# define MAXCLEVEL  ZSTD_maxCLevel()
+#endif
+
 /** parseAdaptParameters() :
  *  reads adapt parameters from *stringPtr (e.g. "--adapt=min=1,max=19) and store them into adaptMinPtr and adaptMaxPtr.
  *  Both adaptMinPtr and adaptMaxPtr must be already allocated and correctly initialized.
@@ -603,6 +633,12 @@ static unsigned parseAdaptParameters(const char* stringPtr, int* adaptMinPtr, in
         return 0;
     }
     if (stringPtr[0] != 0) return 0; /* check the end of string */
+    /* clamp to the supported range of levels, as `-#` and `--fast=#` do,
+     * before comparing the bounds, so that one bound alone is clamped too */
+    if (*adaptMinPtr < MINCLEVEL) *adaptMinPtr = MINCLEVEL;
+    if (*adaptMinPtr > MAXCLEVEL) *adaptMinPtr = MAXCLEVEL;
+    if (*adaptMaxPtr < MINCLEVEL) *adaptMaxPtr = MINCLEVEL;
+    if (*adaptMaxPtr > MAXCLEVEL) *adaptMaxPtr = MAXCLEVEL;
     if (*adaptMinPtr > *adaptMaxPtr) {
         DISPLAYLEVEL(4, "incoherent adaptation limits \n");
         return 0;
@@ -657,7 +693,7 @@ static void setMaxCompression(ZSTD_compressionParameters* params)
 
 static void printVersion(void)
 {
-    if (g_displayLevel < DISPLAY_LEVEL_DEFAULT) {
+    if (g_displayLevel < ZSTD_DISPLAY_LEVEL_DEFAULT) {
         DISPLAYOUT("%s\n", ZSTD_VERSION_STRING);
         return;
     }
@@ -685,6 +721,12 @@ static void printVersion(void)
             DISPLAYOUT("lz4 version %s\n", FIO_lz4Version());
             DISPLAYOUT("lzma version %s\n", FIO_lzmaVersion());
 
+        #ifdef ZSTD_MULTITHREAD
+            DISPLAYOUT("supports Multithreading \n");
+        #else
+            DISPLAYOUT("single-thread operations only \n");
+        #endif
+
             /* posix support */
         #ifdef _POSIX_C_SOURCE
             DISPLAYOUT("_POSIX_C_SOURCE defined: %ldL\n", (long) _POSIX_C_SOURCE);
@@ -695,7 +737,10 @@ static void printVersion(void)
         #ifdef PLATFORM_POSIX_VERSION
             DISPLAYOUT("PLATFORM_POSIX_VERSION defined: %ldL\n", (long) PLATFORM_POSIX_VERSION);
         #endif
-    }   }
+
+            if (!ZSTD_isDeterministicBuild()) {
+                DISPLAYOUT("non-deterministic build\n");
+    }   }   }
 }
 
 #define ZSTD_NB_STRATEGIES 9
@@ -742,7 +787,7 @@ static void printActualCParams(const char* filename, const char* dictFileName, i
 
 /* Environment variables for parameter setting */
 #define ENV_CLEVEL "ZSTD_CLEVEL"
-#define ENV_NBTHREADS "ZSTD_NBTHREADS"    /* takes lower precedence than directly specifying -T# in the CLI */
+#define ENV_NBWORKERS "ZSTD_NBTHREADS"    /* takes lower precedence than directly specifying -T# in the CLI */
 
 /* pick up environment variable */
 static int init_cLevel(void) {
@@ -772,26 +817,29 @@ static int init_cLevel(void) {
     return ZSTDCLI_CLEVEL_DEFAULT;
 }
 
+static unsigned init_nbWorkers(unsigned defaultNbWorkers) {
 #ifdef ZSTD_MULTITHREAD
-static unsigned default_nbThreads(void) {
-    const char* const env = getenv(ENV_NBTHREADS);
+    const char* const env = getenv(ENV_NBWORKERS);
     if (env != NULL) {
         const char* ptr = env;
         if ((*ptr>='0') && (*ptr<='9')) {
             unsigned nbThreads;
             if (readU32FromCharChecked(&ptr, &nbThreads)) {
-                DISPLAYLEVEL(2, "Ignore environment variable setting %s=%s: numeric value too large \n", ENV_NBTHREADS, env);
-                return ZSTDCLI_NBTHREADS_DEFAULT;
+                DISPLAYLEVEL(2, "Ignore environment variable setting %s=%s: numeric value too large \n", ENV_NBWORKERS, env);
+                return defaultNbWorkers;
             } else if (*ptr == 0) {
                 return nbThreads;
             }
         }
-        DISPLAYLEVEL(2, "Ignore environment variable setting %s=%s: not a valid unsigned value \n", ENV_NBTHREADS, env);
+        DISPLAYLEVEL(2, "Ignore environment variable setting %s=%s: not a valid unsigned value \n", ENV_NBWORKERS, env);
     }
 
-    return ZSTDCLI_NBTHREADS_DEFAULT;
-}
+    return defaultNbWorkers;
+#else
+    (void)defaultNbWorkers;
+    return 1;
 #endif
+}
 
 #define NEXT_FIELD(ptr) {         \
     if (*argument == '=') {       \
@@ -810,36 +858,27 @@ static unsigned default_nbThreads(void) {
             CLEAN_RETURN(1);      \
 }   }   }
 
-#define NEXT_UINT32(val32) {        \
-    const char* __nb;               \
-    NEXT_FIELD(__nb);               \
-    val32 = readU32FromChar(&__nb); \
-    if(*__nb != 0) {                \
-        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
-    }                               \
+#define NEXT_UINT32(_varu32) {        \
+    const char* __nb;                 \
+    NEXT_FIELD(__nb);                 \
+    _varu32 = readU32FromChar(&__nb); \
+    if(*__nb != 0) {                  \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB, G, GB, GiB are allowed"); \
+    }                                 \
 }
 
-#define NEXT_TSIZE(valTsize) {           \
-    const char* __nb;                    \
-    NEXT_FIELD(__nb);                    \
-    valTsize = readSizeTFromChar(&__nb); \
-    if(*__nb != 0) {                     \
-        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
-    }                                    \
+#define NEXT_TSIZE(_varTsize) {           \
+    const char* __nb;                     \
+    NEXT_FIELD(__nb);                     \
+    _varTsize = readSizeTFromChar(&__nb); \
+    if(*__nb != 0) {                      \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB, G, GB, GiB are allowed"); \
+    }                                     \
 }
 
 typedef enum { zom_compress, zom_decompress, zom_test, zom_bench, zom_train, zom_list } zstd_operation_mode;
 
 #define CLEAN_RETURN(i) { operationResult = (i); goto _end; }
-
-#ifdef ZSTD_NOCOMPRESS
-/* symbols from compression library are not defined and should not be invoked */
-# define MINCLEVEL  -99
-# define MAXCLEVEL   22
-#else
-# define MINCLEVEL  ZSTD_minCLevel()
-# define MAXCLEVEL  ZSTD_maxCLevel()
-#endif
 
 int main(int argCount, const char* argv[])
 {
@@ -862,24 +901,25 @@ int main(int argCount, const char* argv[])
         singleThread = 0,
         defaultLogicalCores = 0,
         showDefaultCParams = 0,
-        ultra=0,
-        contentSize=1,
-        removeSrcFile=0;
-    ZSTD_ParamSwitch_e mmapDict=ZSTD_ps_auto;
+        contentSize = 1,
+        removeSrcFile = 0,
+        cLevel = init_cLevel(),
+        ultra = 0,
+        cLevelLast = MINCLEVEL - 1, /* for benchmark range */
+        setThreads_non1 = 0;
+    unsigned nbWorkers = init_nbWorkers(NBWORKERS_UNSET);
+    ZSTD_ParamSwitch_e mmapDict = ZSTD_ps_auto;
     ZSTD_ParamSwitch_e useRowMatchFinder = ZSTD_ps_auto;
     FIO_compressionType_t cType = FIO_zstdCompression;
-    int nbWorkers = -1; /* -1 means unset */
     double compressibility = -1.0;  /* lorem ipsum generator */
     unsigned bench_nbSeconds = 3;   /* would be better if this value was synchronized from bench */
-    size_t blockSize = 0;
+    size_t chunkSize = 0;
 
     FIO_prefs_t* const prefs = FIO_createPreferences();
     FIO_ctx_t* const fCtx = FIO_createContext();
     FIO_progressSetting_e progress = FIO_ps_auto;
     zstd_operation_mode operation = zom_compress;
     ZSTD_compressionParameters compressionParams;
-    int cLevel = init_cLevel();
-    int cLevelLast = MINCLEVEL - 1;  /* lower than minimum */
     unsigned recursive = 0;
     unsigned memLimit = 0;
     FileNamesTable* filenames = UTIL_allocateFileNamesTable((size_t)argCount);  /* argCount >= 1 */
@@ -918,7 +958,7 @@ int main(int argCount, const char* argv[])
     programName = lastNameFromPath(programName);
 
     /* preset behaviors */
-    if (exeNameMatch(programName, ZSTD_ZSTDMT)) nbWorkers=0, singleThread=0;
+    if (exeNameMatch(programName, ZSTD_ZSTDMT)) nbWorkers=NBWORKERS_AUTOCPU, singleThread=0;
     if (exeNameMatch(programName, ZSTD_UNZSTD)) operation=zom_decompress;
     if (exeNameMatch(programName, ZSTD_CAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; FIO_setPassThroughFlag(prefs, 1); outFileName=stdoutmark; g_displayLevel=1; }     /* supports multiple formats */
     if (exeNameMatch(programName, ZSTD_ZCAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; FIO_setPassThroughFlag(prefs, 1); outFileName=stdoutmark; g_displayLevel=1; }    /* behave like zcat, also supports multiple formats */
@@ -926,7 +966,7 @@ int main(int argCount, const char* argv[])
         suffix = GZ_EXTENSION; cType = FIO_gzipCompression; removeSrcFile=1;
         dictCLevel = cLevel = 6;  /* gzip default is -6 */
     }
-    if (exeNameMatch(programName, ZSTD_GUNZIP)) { operation=zom_decompress; removeSrcFile=1; }                                                     /* behave like gunzip, also supports multiple formats */
+    if (exeNameMatch(programName, ZSTD_GUNZIP)) { operation=zom_decompress; removeSrcFile=1; }                              /* behave like gunzip, also supports multiple formats */
     if (exeNameMatch(programName, ZSTD_GZCAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; FIO_setPassThroughFlag(prefs, 1); outFileName=stdoutmark; g_displayLevel=1; }   /* behave like gzcat, also supports multiple formats */
     if (exeNameMatch(programName, ZSTD_LZMA)) { suffix = LZMA_EXTENSION; cType = FIO_lzmaCompression; removeSrcFile=1; }    /* behave like lzma */
     if (exeNameMatch(programName, ZSTD_UNLZMA)) { operation=zom_decompress; cType = FIO_lzmaCompression; removeSrcFile=1; } /* behave like unlzma, also supports multiple formats */
@@ -1069,11 +1109,13 @@ int main(int argCount, const char* argv[])
                   continue;
                 }
 #endif
-                if (longCommandWArg(&argument, "--threads")) { NEXT_UINT32(nbWorkers); continue; }
+                if (longCommandWArg(&argument, "--threads")) { NEXT_UINT32(nbWorkers); setThreads_non1 = (nbWorkers != 1); continue; }
+                if (longCommandWArg(&argument, "--memlimit-decompress")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memlimit")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memory")) { NEXT_UINT32(memLimit); continue; }
-                if (longCommandWArg(&argument, "--memlimit-decompress")) { NEXT_UINT32(memLimit); continue; }
-                if (longCommandWArg(&argument, "--block-size")) { NEXT_TSIZE(blockSize); continue; }
+                if (longCommandWArg(&argument, "--block-size")) { NEXT_TSIZE(chunkSize); continue; } /* hidden command, prefer --split below */
+                if (longCommandWArg(&argument, "--split")) { NEXT_TSIZE(chunkSize); continue; }
+                if (longCommandWArg(&argument, "--jobsize")) { NEXT_TSIZE(chunkSize); continue; } /* note: overloaded variable */
                 if (longCommandWArg(&argument, "--maxdict")) { NEXT_UINT32(maxDictSize); continue; }
                 if (longCommandWArg(&argument, "--dictID")) { NEXT_UINT32(dictID); continue; }
                 if (longCommandWArg(&argument, "--zstd=")) { if (!parseCompressionParameters(argument, &compressionParams)) { badUsage(programName, originalArgument); CLEAN_RETURN(1); } ; cType = FIO_zstdCompression; continue; }
@@ -1109,6 +1151,7 @@ int main(int argCount, const char* argv[])
                 if (longCommandWArg(&argument, "--trace")) { char const* traceFile; NEXT_FIELD(traceFile); TRACE_enable(traceFile); continue; }
 #endif
                 if (longCommandWArg(&argument, "--patch-from")) { NEXT_FIELD(patchFromDictFileName); ultra = 1; continue; }
+                if (longCommandWArg(&argument, "--patch-apply")) { operation=zom_decompress; NEXT_FIELD(patchFromDictFileName); memLimit= 1U << ZSTD_WINDOWLOG_MAX; continue; }
                 if (longCommandWArg(&argument, "--long")) {
                     unsigned ldmWindowLog = 0;
                     ldmFlag = 1;
@@ -1256,10 +1299,10 @@ int main(int argCount, const char* argv[])
                     bench_nbSeconds = readU32FromChar(&argument);
                     break;
 
-                    /* cut input into blocks (benchmark only) */
+                    /* hidden shortcut for --split=# and --jobsize=# */
                 case 'B':
                     argument++;
-                    blockSize = readU32FromChar(&argument);
+                    chunkSize = readU32FromChar(&argument);
                     break;
 
                     /* benchmark files separately (hidden option) */
@@ -1274,6 +1317,7 @@ int main(int argCount, const char* argv[])
                 case 'T':
                     argument++;
                     nbWorkers = readU32FromChar(&argument);
+                    setThreads_non1 = (nbWorkers != 1);
                     break;
 
                     /* Dictionary Selection level */
@@ -1318,11 +1362,11 @@ int main(int argCount, const char* argv[])
     DISPLAYLEVEL(3, WELCOME_MESSAGE);
 
 #ifdef ZSTD_MULTITHREAD
-    if ((operation==zom_decompress) && (nbWorkers > 1)) {
+    if ((operation==zom_decompress) && (setThreads_non1)) {
         DISPLAYLEVEL(2, "Warning : decompression does not support multi-threading\n");
     }
-    if ((nbWorkers==0) && (!singleThread)) {
-        /* automatically set # workers based on # of reported cpus */
+    if ((nbWorkers==NBWORKERS_AUTOCPU) && (!singleThread)) {
+        /* automatically set # workers based on # of reported cpu cores */
         if (defaultLogicalCores) {
             nbWorkers = (unsigned)UTIL_countLogicalCores();
             DISPLAYLEVEL(3, "Note: %d logical core(s) detected \n", nbWorkers);
@@ -1331,18 +1375,10 @@ int main(int argCount, const char* argv[])
             DISPLAYLEVEL(3, "Note: %d physical core(s) detected \n", nbWorkers);
         }
     }
-    /* Resolve to default if nbWorkers is still unset */
-    if (nbWorkers == -1) {
-      if (operation == zom_decompress) {
-        nbWorkers = 1;
-      } else {
-        nbWorkers = default_nbThreads();
-      }
-    }
-    if (operation != zom_bench)
+    if (operation == zom_compress)
         DISPLAYLEVEL(4, "Compressing with %u worker threads \n", nbWorkers);
 #else
-    (void)singleThread; (void)nbWorkers; (void)defaultLogicalCores;
+    (void)singleThread; (void)nbWorkers; (void)defaultLogicalCores; (void)setThreads_non1;
 #endif
 
     g_utilDisplayLevel = g_displayLevel;
@@ -1369,7 +1405,7 @@ int main(int argCount, const char* argv[])
         size_t const nbFileLists = file_of_names->tableSize;
         size_t flNb;
         for (flNb=0; flNb < nbFileLists; flNb++) {
-            FileNamesTable* const fnt = UTIL_createFileNamesTable_fromFileName(file_of_names->fileNames[flNb]);
+            FileNamesTable* const fnt = UTIL_createFileNamesTable_fromFileList(file_of_names->fileNames[flNb]);
             if (fnt==NULL) {
                 DISPLAYLEVEL(1, "zstd: error reading %s \n", file_of_names->fileNames[flNb]);
                 CLEAN_RETURN(1);
@@ -1400,11 +1436,14 @@ int main(int argCount, const char* argv[])
     /* Check if benchmark is selected */
     if (operation==zom_bench) {
 #ifndef ZSTD_NOBENCH
+        int benchThreadsMsgLevel = 2;
+        if (nbWorkers == NBWORKERS_UNSET) nbWorkers = 1;
+        if (nbWorkers <= 1) benchThreadsMsgLevel = 3;
         if (cType != FIO_zstdCompression) {
             DISPLAYLEVEL(1, "benchmark mode is only compatible with zstd format \n");
             CLEAN_RETURN(1);
         }
-        benchParams.blockSize = blockSize;
+        benchParams.chunkSizeMax = chunkSize;
         benchParams.targetCBlockSize = targetCBlockSize;
         benchParams.nbWorkers = (int)nbWorkers;
         benchParams.realTime = (unsigned)setRealTimePrio;
@@ -1425,7 +1464,7 @@ int main(int argCount, const char* argv[])
         if (cLevel > ZSTD_maxCLevel()) cLevel = ZSTD_maxCLevel();
         if (cLevelLast > ZSTD_maxCLevel()) cLevelLast = ZSTD_maxCLevel();
         if (cLevelLast < cLevel) cLevelLast = cLevel;
-        DISPLAYLEVEL(3, "Benchmarking ");
+        DISPLAYLEVEL(benchThreadsMsgLevel, "Benchmarking ");
         if (filenames->tableSize > 1)
             DISPLAYLEVEL(3, "%u files ", (unsigned)filenames->tableSize);
         if (cLevelLast > cLevel) {
@@ -1433,7 +1472,7 @@ int main(int argCount, const char* argv[])
         } else {
             DISPLAYLEVEL(3, "at level %d ", cLevel);
         }
-        DISPLAYLEVEL(3, "using %i threads \n", nbWorkers);
+        DISPLAYLEVEL(benchThreadsMsgLevel, "using %i threads \n", nbWorkers);
         if (filenames->tableSize > 0) {
             if(separateFiles) {
                 unsigned i;
@@ -1448,7 +1487,7 @@ int main(int argCount, const char* argv[])
         }
 
 #else
-        (void)bench_nbSeconds; (void)blockSize; (void)setRealTimePrio; (void)separateFiles; (void)compressibility;
+        (void)bench_nbSeconds; (void)chunkSize; (void)setRealTimePrio; (void)separateFiles; (void)compressibility;
 #endif
         goto _end;
     }
@@ -1460,22 +1499,23 @@ int main(int argCount, const char* argv[])
         zParams.compressionLevel = dictCLevel;
         zParams.notificationLevel = (unsigned)g_displayLevel;
         zParams.dictID = dictID;
+        if (nbWorkers == NBWORKERS_UNSET) nbWorkers = init_nbWorkers(ZSTDCLI_NBTHREADS_DEFAULT);
         if (dict == cover) {
             int const optimize = !coverParams.k || !coverParams.d;
             coverParams.nbThreads = (unsigned)nbWorkers;
             coverParams.zParams = zParams;
-            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, blockSize, NULL, &coverParams, NULL, optimize, memLimit);
+            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, NULL, &coverParams, NULL, optimize, memLimit);
         } else if (dict == fastCover) {
             int const optimize = !fastCoverParams.k || !fastCoverParams.d;
             fastCoverParams.nbThreads = (unsigned)nbWorkers;
             fastCoverParams.zParams = zParams;
-            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, blockSize, NULL, NULL, &fastCoverParams, optimize, memLimit);
+            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, NULL, NULL, &fastCoverParams, optimize, memLimit);
         } else {
             ZDICT_legacy_params_t dictParams;
             memset(&dictParams, 0, sizeof(dictParams));
             dictParams.selectivityLevel = dictSelect;
             dictParams.zParams = zParams;
-            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, blockSize, &dictParams, NULL, NULL, 0, memLimit);
+            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, &dictParams, NULL, NULL, 0, memLimit);
         }
 #else
         (void)dictCLevel; (void)dictSelect; (void)dictID;  (void)maxDictSize; /* not used when ZSTD_NODICT set */
@@ -1524,7 +1564,12 @@ int main(int argCount, const char* argv[])
     /* check compression level limits */
     {   int const maxCLevel = ultra ? ZSTD_maxCLevel() : ZSTDCLI_CLEVEL_MAX;
         if (cLevel > maxCLevel) {
-            DISPLAYLEVEL(2, "Warning : compression level higher than max, reduced to %i \n", maxCLevel);
+            DISPLAYLEVEL(2, "Warning : compression level higher than max, reduced to %i. ", maxCLevel);
+            DISPLAYLEVEL(2, "Specify --ultra to raise the limit to 22 and use "
+                            "--long=31 for maximum compression. Note that this "
+                            "requires high amounts of memory, and the resulting data "
+                            "might be rejected by third-party decoders and is "
+                            "therefore only recommended for archival purposes. \n");            
             cLevel = maxCLevel;
     }   }
 #endif
@@ -1582,8 +1627,9 @@ int main(int argCount, const char* argv[])
 #ifndef ZSTD_NOCOMPRESS
         FIO_setCompressionType(prefs, cType);
         FIO_setContentSize(prefs, contentSize);
+        if (nbWorkers == NBWORKERS_UNSET) nbWorkers = init_nbWorkers(ZSTDCLI_NBTHREADS_DEFAULT);
         FIO_setNbWorkers(prefs, (int)nbWorkers);
-        FIO_setBlockSize(prefs, (int)blockSize);
+        FIO_setJobSize(prefs, (int)chunkSize);
         if (g_overlapLog!=OVERLAP_LOG_DEFAULT) FIO_setOverlapLog(prefs, (int)g_overlapLog);
         FIO_setLdmFlag(prefs, (unsigned)ldmFlag);
         FIO_setLdmHashLog(prefs, (int)g_ldmHashLog);
@@ -1630,6 +1676,8 @@ int main(int argCount, const char* argv[])
         (void)ultra; (void)cLevel; (void)ldmFlag; (void)literalCompressionMode;
         (void)targetCBlockSize; (void)streamSrcSize; (void)srcSizeHint;
         (void)ZSTD_strategyMap; (void)useRowMatchFinder; (void)cType;
+        (void)g_overlapLog; (void)g_ldmHashLog; (void)g_ldmMinMatch;
+        (void)g_ldmHashRateLog; (void)g_ldmBucketSizeLog;
         DISPLAYLEVEL(1, "Compression not supported \n");
 #endif
     } else {  /* decompression or test */

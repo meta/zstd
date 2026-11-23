@@ -10,8 +10,8 @@
 
 # Read guidelines from https://wiki.gnome.org/Initiatives/GnomeGoals/MesonPorting
 
-option('legacy_level', type: 'integer', min: 0, max: 7, value: 5,
-  description: 'Support any legacy format: 7 to 1 for v0.7+ to v0.1+')
+option('legacy_level', type: 'integer', min: 0, max: 7, value: 0,
+  description: 'Support legacy format: 0=disabled, 1-7=support v0.1+ to v0.7+')
 option('debug_level', type: 'integer', min: 0, max: 9, value: 1,
   description: 'Enable run-time debug. See lib/common/debug.h')
 option('backtrace', type: 'feature', value: 'disabled',

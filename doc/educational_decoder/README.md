@@ -24,6 +24,11 @@ by defining `ZDEC_NO_DICTIONARY`.
 
     harness <input-file> <output-file> [dictionary]
 
+`make test-unit` checks valid boundary cases and rejection of malformed input.
+Because the educational decoder reports errors by calling `exit(1)`, each
+malformed case runs separately and must produce the expected diagnostic.
+`make test` also runs ordinary and dictionary-based decompression round trips.
+
 As an additional resource to be used with this decoder,
 see the `decodecorpus` tool in the [tests] directory.
 It generates valid Zstandard frames that can be used to verify

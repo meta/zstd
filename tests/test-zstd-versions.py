@@ -15,6 +15,7 @@ import filecmp
 import glob
 import hashlib
 import os
+import platform
 import shutil
 import sys
 import subprocess
@@ -23,7 +24,12 @@ from subprocess import Popen, PIPE
 repo_url = 'https://github.com/facebook/zstd.git'
 tmp_dir_name = 'tests/versionsTest'
 make_cmd = 'make'
-make_args = ['-j','CFLAGS=-O0']
+# Some old versions do not compile when the default target enables BMI2,
+# as GCC does on ubuntu-26.04 runners (x86-64-v3).
+cflags = '-O0'
+if platform.machine() in ('x86_64', 'AMD64'):
+    cflags += ' -march=x86-64'
+make_args = ['-j', 'CFLAGS=' + cflags]
 git_cmd = 'git'
 test_dat_src = 'README.md'
 test_dat = 'test_dat'
@@ -259,13 +265,23 @@ if __name__ == '__main__':
                     shutil.copy2('dictBuilder', '{}/dictBuilder.{}'.format(tmp_dir, tag))
                 os.chdir(r_dir + '/programs')  # /path/to/zstd/tests/versionsTest/<TAG>/programs
                 make(['clean'], False)  # separate 'clean' target to allow parallel build
-                make(['zstd'], False)
+                # Enable legacy support for cross-version compatibility testing.
+                # Use ZSTD_LEGACY_SUPPORT=1 for v0.6.x due to a bug where headers
+                # check for ==1 but code checks for >=1.
+                # Use ZSTD_LEGACY_SUPPORT=5 for v1.2.0+ because =1 includes old
+                # legacy files (v01-v04) that have missing includes in newer versions.
+                if tag < 'v1.2.0':
+                    make(['zstd', 'ZSTD_LEGACY_SUPPORT=1'], False)
+                else:
+                    make(['zstd', 'ZSTD_LEGACY_SUPPORT=5'], False)
             else:
                 os.chdir(programs_dir)
                 print('-----------------------------------------------')
                 print('compiling head')
                 print('-----------------------------------------------')
-                make(['zstd'], False)
+                # Enable legacy support for head to test cross-version compatibility
+                # (legacy support is disabled by default since v1.6.0)
+                make(['zstd', 'ZSTD_LEGACY_SUPPORT=5'], False)
             shutil.copy2('zstd', dst_zstd)
 
     # remove any remaining *.zst and *.dec from previous test

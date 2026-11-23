@@ -13,16 +13,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # tag=v4.1.1
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
 
     - name: Set up JDK 17
-      uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
       with:
         java-version: '17'
         distribution: 'temurin'
 
     - name: Setup Android SDK
-      uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+      uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
 
     - name: Install Android NDK
       run: |
@@ -37,3 +37,14 @@ jobs:
              RANLIB=llvm-ranlib \
              STRIP=llvm-strip
 
+    - name: Build with CMake and NDK
+      run: |
+        mkdir -p build-android
+        cd build-android
+        cmake --version
+        cmake ../build/cmake \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Release
+        cmake --build . --parallel

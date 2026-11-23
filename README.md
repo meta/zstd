@@ -30,9 +30,9 @@ a list of known ports and bindings is provided on [Zstandard homepage](https://f
 
 For reference, several fast compression algorithms were tested and compared
 on a desktop featuring a Core i7-9700K CPU @ 4.9GHz
-and running Ubuntu 20.04 (`Linux ubu20 5.15.0-101-generic`),
+and running Ubuntu 24.04 (`Linux 6.8.0-53-generic`),
 using [lzbench], an open-source in-memory benchmark by @inikep
-compiled with [gcc] 9.4.0,
+compiled with [gcc] 14.2.0,
 on the [Silesia compression corpus].
 
 [lzbench]: https://github.com/inikep/lzbench
@@ -41,16 +41,16 @@ on the [Silesia compression corpus].
 
 | Compressor name         | Ratio | Compression| Decompress.|
 | ---------------         | ------| -----------| ---------- |
-| **zstd 1.5.6 -1**       | 2.887 |   510 MB/s |  1580 MB/s |
-| [zlib] 1.2.11 -1        | 2.743 |    95 MB/s |   400 MB/s |
-| brotli 1.0.9 -0         | 2.702 |   395 MB/s |   430 MB/s |
-| **zstd 1.5.6 --fast=1** | 2.437 |   545 MB/s |  1890 MB/s |
-| **zstd 1.5.6 --fast=3** | 2.239 |   650 MB/s |  2000 MB/s |
-| quicklz 1.5.0 -1        | 2.238 |   525 MB/s |   750 MB/s |
-| lzo1x 2.10 -1           | 2.106 |   650 MB/s |   825 MB/s |
-| [lz4] 1.9.4             | 2.101 |   700 MB/s |  4000 MB/s |
-| lzf 3.6 -1              | 2.077 |   420 MB/s |   830 MB/s |
-| snappy 1.1.9            | 2.073 |   530 MB/s |  1660 MB/s |
+| **zstd 1.5.7 -1**       | 2.896 |   510 MB/s |  1550 MB/s |
+| brotli 1.1.0 -1         | 2.883 |   290 MB/s |   425 MB/s |
+| [zlib] 1.3.1 -1         | 2.743 |   105 MB/s |   390 MB/s |
+| **zstd 1.5.7 --fast=1** | 2.439 |   545 MB/s |  1850 MB/s |
+| quicklz 1.5.0 -1        | 2.238 |   520 MB/s |   750 MB/s |
+| **zstd 1.5.7 --fast=4** | 2.146 |   665 MB/s |  2050 MB/s |
+| lzo1x 2.10 -1           | 2.106 |   650 MB/s |   780 MB/s |
+| [lz4] 1.10.0            | 2.101 |   675 MB/s |  3850 MB/s |
+| snappy 1.2.1            | 2.089 |   520 MB/s |  1500 MB/s |
+| lzf 3.6 -1              | 2.077 |   410 MB/s |   820 MB/s |
 
 [zlib]: https://www.zlib.net/
 [lz4]: https://lz4.github.io/lz4/
@@ -120,33 +120,40 @@ Dictionary gains are mostly effective in the first few KB. Then, the compression
 
 ## Build instructions
 
-`make` is the officially maintained build system of this project.
-All other build systems are "compatible" and 3rd-party maintained,
-they may feature small differences in advanced options.
-When your system allows it, prefer using `make` to build `zstd` and `libzstd`.
+`make` is the main build system of this project.
+It is the reference, and other build systems are periodically updated to stay compatible.
+However, small drifts and feature differences can be present, since perfect synchronization is difficult.
+For this reason, when your build system allows it, prefer employing `make`.
 
 ### Makefile
 
-If your system is compatible with standard `make` (or `gmake`),
-invoking `make` in root directory will generate `zstd` cli in root directory.
-It will also create `libzstd` into `lib/`.
+Assuming your system supports standard `make` (or `gmake`),
+just invoking `make` in root directory generates `zstd` cli at root,
+and also generates `libzstd` into `lib/`.
 
-Other available options include:
-- `make install` : create and install zstd cli, library and man pages
-- `make check` : create and run `zstd`, test its behavior on local platform
+Other standard targets include:
+- `make install` : install zstd cli, library and man pages
+- `make check` : run `zstd`, test its essential behavior on local platform
 
 The `Makefile` follows the [GNU Standard Makefile conventions](https://www.gnu.org/prep/standards/html_node/Makefile-Conventions.html),
-allowing staged install, standard flags, directory variables and command variables.
+allowing staged install, standard compilation flags, directory variables and command variables.
 
-For advanced use cases, specialized compilation flags which control binary generation
-are documented in [`lib/README.md`](lib/README.md#modular-build) for the `libzstd` library
+For advanced use cases, specialized flags which control binary generation and installation paths are documented
+in [`lib/README.md`](lib/README.md#modular-build) for the `libzstd` library
 and in [`programs/README.md`](programs/README.md#compilation-variables) for the `zstd` CLI.
 
 ### cmake
 
-A `cmake` project generator is provided within `build/cmake`.
-It can generate Makefiles or other build scripts
-to create `zstd` binary, and `libzstd` dynamic and static libraries.
+A `cmake` project generator is available for generating Makefiles or other build scripts
+to create the `zstd` binary as well as `libzstd` dynamic and static libraries.
+The repository root now contains a minimal `CMakeLists.txt` that forwards to `build/cmake`,
+so you can configure the project with a standard `cmake -S .` invocation,
+while the historical `cmake -S build/cmake` entry point remains fully supported.
+
+```bash
+cmake -S . -B build-cmake
+cmake --build build-cmake
+```
 
 By default, `CMAKE_BUILD_TYPE` is set to `Release`.
 
@@ -156,7 +163,7 @@ By default, `CMAKE_BUILD_TYPE` is set to `Release`.
 To perform a Fat/Universal2 build and install use the following commands:
 
 ```bash
-cmake -B build-cmake-debug -S build/cmake -G Ninja -DCMAKE_OSX_ARCHITECTURES="x86_64;x86_64h;arm64"
+cmake -S . -B build-cmake-debug -G Ninja -DCMAKE_OSX_ARCHITECTURES="x86_64;x86_64h;arm64"
 cd build-cmake-debug
 ninja
 sudo ninja install
@@ -198,10 +205,11 @@ If the version is out of date, please [create an issue or pull request](https://
 ### Visual Studio (Windows)
 
 Going into `build` directory, you will find additional possibilities:
-- Projects for Visual Studio 2005, 2008 and 2010.
+- Projects for Visual Studio 2008 and 2010.
   + VS2010 project is compatible with VS2012, VS2013, VS2015 and VS2017.
 - Automated build scripts for Visual compiler by [@KrzysFR](https://github.com/KrzysFR), in `build/VS_scripts`,
   which will build `zstd` cli and `libzstd` library without any need to open Visual Studio solution.
+- It is now recommended to generate Visual Studio solutions from `cmake`
 
 ### Buck
 
@@ -210,7 +218,7 @@ The output binary will be in `buck-out/gen/programs/`.
 
 ### Bazel
 
-You easily can integrate zstd into your Bazel project by using the module hosted on the [Bazel Central Repository](https://registry.bazel.build/modules/zstd).
+You can integrate zstd into your Bazel project by using the module hosted on the [Bazel Central Repository](https://registry.bazel.build/modules/zstd).
 
 ## Testing
 
@@ -221,9 +229,9 @@ For information on CI testing, please refer to `TESTING.md`.
 
 ## Status
 
-Zstandard is currently deployed within Facebook and many other large cloud infrastructures.
-It is run continuously to compress large amounts of data in multiple formats and use cases.
-Zstandard is considered safe for production environments.
+Zstandard is deployed within Meta and many other large cloud infrastructures,
+to compress humongous amounts of data in various formats and use cases.
+It is also continuously fuzzed for security issues by Google's [oss-fuzz](https://github.com/google/oss-fuzz/tree/master/projects/zstd) program.
 
 ## License
 
@@ -232,6 +240,5 @@ Zstandard is dual-licensed under [BSD](LICENSE) OR [GPLv2](COPYING).
 ## Contributing
 
 The `dev` branch is the one where all contributions are merged before reaching `release`.
-If you plan to propose a patch, please commit into the `dev` branch, or its own feature branch.
 Direct commit to `release` are not permitted.
 For more information, please read [CONTRIBUTING](CONTRIBUTING.md).

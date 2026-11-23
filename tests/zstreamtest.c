@@ -41,6 +41,9 @@
 #include "util.h"
 #include "timefn.h"       /* UTIL_time_t, UTIL_clockSpanMicro, UTIL_getTime */
 #include "external_matchfinder.h"   /* zstreamSequenceProducer, EMF_testCase */
+#ifndef ZSTD_NO_TRACE
+#  include "zstd_trace.h"
+#endif
 
 /*-************************************
  *  Constants
@@ -74,6 +77,26 @@ static UTIL_time_t g_displayClock = UTIL_TIME_INITIALIZER;
             if (g_displayLevel>=4) fflush(stderr); } }
 
 static U64 g_clockTime = 0;
+
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+/* Only record traces for the context used by the frame-completion tests. */
+static ZSTD_DCtx const* g_frameEndTraceDCtx;
+static unsigned g_frameEndTraceCount;
+static ZSTD_Trace g_frameEndTrace;
+
+ZSTD_TraceCtx ZSTD_trace_decompress_begin(ZSTD_DCtx const* dctx)
+{
+    return dctx == g_frameEndTraceDCtx;
+}
+
+void ZSTD_trace_decompress_end(ZSTD_TraceCtx ctx, ZSTD_Trace const* trace)
+{
+    if (ctx) {
+        ++g_frameEndTraceCount;
+        g_frameEndTrace = *trace;
+    }
+}
+#endif
 
 
 /*-*******************************************************
@@ -258,6 +281,182 @@ static U32 badParameters(ZSTD_CCtx* zc, ZSTD_parameters const savedParams)
     CHECK_RET(8, params.fParams.contentSizeFlag != savedParams.fParams.contentSizeFlag, "contentSizeFlag");
     CHECK_RET(9, params.fParams.noDictIDFlag != savedParams.fParams.noDictIDFlag, "noDictIDFlag");
     return 0;
+}
+
+/* Exercise the same small frame through all frame-decompression entry points.
+ * Byte-at-a-time input prevents decompressStream() taking its one-shot shortcut. */
+static int FUZ_checkFrameCompletion(U32 seed, int testNb,
+                                   const BYTE* frame, size_t frameSize,
+                                   ZSTD_ErrorCode expectedError, int ignoreChecksum)
+{
+    ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+    BYTE out[16];
+    int api;
+    int result = 1;
+    CHECK(dctx == NULL, "memory allocation failure");
+
+    for (api = 0; api < 6; ++api) {
+        size_t r = 0;
+        size_t consumed = 0;
+        size_t produced = 0;
+        /* Buffered streaming can exhaust its FCS-sized internal output buffer
+         * before reaching the final size check. Stable-output streaming below
+         * has enough room and must reach corruption_detected at frame end. */
+        ZSTD_ErrorCode const apiError = api == 3 && (frame[4] & 0x20) && frame[5] == 4
+                                      ? ZSTD_error_dstSize_tooSmall : expectedError;
+        CHECK_Z(ZSTD_DCtx_reset(dctx, ZSTD_reset_session_and_parameters));
+        CHECK_Z(ZSTD_DCtx_setParameter(dctx, ZSTD_d_forceIgnoreChecksum, ignoreChecksum));
+        if (api >= 4)
+            CHECK_Z(ZSTD_DCtx_setParameter(dctx, ZSTD_d_stableOutBuffer, 1));
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+        g_frameEndTraceDCtx = dctx;
+        g_frameEndTraceCount = 0;
+#endif
+        if (api == 0) {
+            r = ZSTD_decompressDCtx(dctx, out, sizeof(out), frame, frameSize);
+            if (!ZSTD_isError(r)) {
+                consumed = frameSize;
+                produced = r;
+            }
+        } else if (api == 1) {
+            CHECK_Z(ZSTD_decompressBegin(dctx));
+            while (ZSTD_nextSrcSizeToDecompress(dctx) != 0) {
+                size_t const needed = ZSTD_nextSrcSizeToDecompress(dctx);
+                CHECK(needed > frameSize - consumed, "truncated bufferless test frame");
+                r = ZSTD_decompressContinue(dctx, out + produced, sizeof(out) - produced,
+                                            frame + consumed, needed);
+                consumed += needed;
+                if (ZSTD_isError(r)) break;
+                produced += r;
+            }
+        } else {
+            ZSTD_inBuffer input = { frame, api == 2 || api == 4 ? frameSize : 0, 0 };
+            ZSTD_outBuffer output = { out, sizeof(out), 0 };
+            do {
+                size_t const oldInput = input.pos;
+                size_t const oldOutput = output.pos;
+                if (input.size < frameSize) ++input.size;
+                r = ZSTD_decompressStream(dctx, &output, &input);
+                CHECK(!ZSTD_isError(r) && r != 0 && input.size == frameSize
+                      && input.pos == oldInput && output.pos == oldOutput,
+                      "streaming made no progress");
+            } while (!ZSTD_isError(r) && r != 0);
+            consumed = input.pos;
+            produced = output.pos;
+        }
+        CHECK(ZSTD_getErrorCode(r) != apiError,
+              "API %d: expected %s, got %s", api,
+              ZSTD_getErrorString(apiError), ZSTD_getErrorName(r));
+        if (expectedError == ZSTD_error_no_error) {
+            CHECK(consumed != frameSize || produced != 5 || memcmp(out, "hello", 5) != 0,
+                  "API %d: incomplete or incorrect frame", api);
+        }
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+        CHECK(g_frameEndTraceCount != (unsigned)(expectedError == ZSTD_error_no_error),
+              "API %d: expected %u completed traces, got %u", api,
+              (unsigned)(expectedError == ZSTD_error_no_error), g_frameEndTraceCount);
+        if (g_frameEndTraceCount) {
+            int const streaming = api == 1 || api == 3 || api == 5
+                               || ((api == 2 || api == 4) && !(frame[4] & 0x20));
+            CHECK(g_frameEndTrace.version != ZSTD_VERSION_NUMBER
+                  || g_frameEndTrace.dctx != dctx
+                  || g_frameEndTrace.streaming != streaming
+                  || g_frameEndTrace.uncompressedSize != 5
+                  || g_frameEndTrace.compressedSize != frameSize,
+                  "API %d: incorrect frame-completion trace (compressed size %u, expected %u)",
+                  api, (unsigned)g_frameEndTrace.compressedSize, (unsigned)frameSize);
+        }
+#endif
+    }
+    result = 0;
+_output_error:
+#if defined(ZSTD_TRACE) && ZSTD_TRACE
+    g_frameEndTraceDCtx = NULL;
+#endif
+    ZSTD_freeDCtx(dctx);
+    return result;
+}
+
+static int FUZ_testFrameCompletion(U32 seed, int testNb)
+{
+    /* Two raw blocks decode to "hello". Each fits even when FCS is 4, so
+     * the overflow case reaches the frame-content-size check at frame end. */
+    static const BYTE prefix[] = {
+        0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x05,
+        0x10, 0, 0, 'h', 'e', 0x18, 0, 0, 'l', 'l', 'o'
+    };
+    static const struct {
+        BYTE tail[8];
+        size_t size;
+        int corrupt;
+    } cases[] = {
+        { { 0x01, 0, 0 },                         3, 0 }, /* empty last raw */
+        { { 0x03, 0, 0, 'x' },                    4, 0 }, /* empty last RLE */
+        { { 0x15, 0, 0, 0, 0 },                  5, 0 }, /* valid empty compressed */
+        { { 0x00, 0, 0, 0x01, 0, 0 },            6, 0 }, /* empty non-last raw */
+        { { 0x02, 0, 0, 'x', 0x01, 0, 0 },       7, 0 }, /* empty non-last RLE */
+        { { 0x14, 0, 0, 0, 0, 0x01, 0, 0 },     8, 0 }, /* empty non-last compressed */
+        { { 0x05, 0, 0 },                         3, 1 }, /* missing compressed payload */
+        { { 0x04, 0, 0, 0x01, 0, 0 },            6, 1 }, /* same, non-last */
+        { { 0x0d, 0, 0, 0 },                      4, 1 }, /* truncated compressed payload */
+    };
+    size_t i;
+    int contentSize;
+    int checksum;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        /* 3 selects unknown FCS; 4 and 6 mismatch the actual size of 5. */
+        for (contentSize = 3; contentSize <= 6; ++contentSize) {
+            /* No checksum, valid checksum, corrupt checksum, or ignore it. */
+            for (checksum = 0; checksum < 4; ++checksum) {
+                BYTE frame[32];
+                size_t frameSize = sizeof(prefix) + cases[i].size;
+                ZSTD_ErrorCode expectedError = ZSTD_error_no_error;
+                memcpy(frame, prefix, sizeof(prefix));
+                frame[4] = (BYTE)((contentSize == 3 ? 0 : 0x20) | (checksum ? 4 : 0));
+                frame[5] = (BYTE)(contentSize == 3 ? 0 : contentSize);
+                memcpy(frame + sizeof(prefix), cases[i].tail, cases[i].size);
+                if (checksum) {
+                    U32 const hash = (U32)XXH64("hello", 5, 0);
+                    MEM_writeLE32(frame + frameSize, hash ^ (U32)(checksum >= 2));
+                    frameSize += 4;
+                }
+                if (cases[i].corrupt || contentSize == 4 || contentSize == 6)
+                    expectedError = ZSTD_error_corruption_detected;
+                else if (checksum == 2)
+                    expectedError = ZSTD_error_checksum_wrong;
+                CHECK(FUZ_checkFrameCompletion(seed, testNb, frame, frameSize,
+                                                expectedError, checksum == 3),
+                      "frame completion: case %u, FCS %d, checksum %d",
+                      (unsigned)i, contentSize == 3 ? 0 : contentSize, checksum);
+            }
+        }
+    }
+    return 0;
+_output_error:
+    return 1;
+}
+
+/* Compress @src with @pledgedSrcSize declared up-front, streaming the input so
+ * that a first ZSTD_e_end call doesn't auto-determine pledgedSrcSize instead.
+ * @return : the first error encountered, or 0, with *cSizePtr set. */
+static size_t FUZ_compressWithPledgedSrcSize(ZSTD_CCtx* cctx,
+                                             void* dst, size_t dstCapacity,
+                                       const void* src, size_t srcSize,
+                                             unsigned long long pledgedSrcSize,
+                                             size_t* cSizePtr)
+{
+    ZSTD_outBuffer out = { dst, dstCapacity, 0 };
+    ZSTD_inBuffer in = { src, srcSize, 0 };
+    size_t r = ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+    if (!ZSTD_isError(r)) r = ZSTD_CCtx_setPledgedSrcSize(cctx, pledgedSrcSize);
+    while ((in.pos < in.size) && !ZSTD_isError(r))
+        r = ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_continue);
+    do {
+        if (ZSTD_isError(r)) break;
+        r = ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_end);
+    } while (r != 0);
+    *cSizePtr = out.pos;
+    return r;
 }
 
 static int basicUnitTests(U32 seed, double compressibility, int bigTests)
@@ -1043,6 +1242,107 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
         }
         DISPLAYLEVEL(3, "OK \n");
 
+        DISPLAYLEVEL(3, "test%3i : ZSTD_c_stableInBuffer : a new session ignores input pending in the abandoned frame : ", testNb++);
+        {   ZSTD_CCtx* const cctx2 = ZSTD_createCCtx();
+            const char* const src2 = (const char*)CNBuffer + 1 MB;
+            size_t const srcSize2 = 50 KB;
+            int pendingCase;
+            assert(cctx2 != NULL);
+            /* 0: pending before initialization, 1: pending within a frame,
+             * 2: multi-threaded, 3: new session started by ZSTD_compress2() */
+            for (pendingCase = 0; pendingCase < 4; pendingCase++) {
+                ZSTD_inBuffer inBuf;
+                ZSTD_outBuffer outBuf;
+                size_t frameSize;
+                inBuf.src = CNBuffer;
+                inBuf.size = (pendingCase == 1) ? 200 KB : 1 KB;
+                inBuf.pos = 0;
+                outBuf.dst = compressedBuffer;
+                outBuf.size = compressedBufferSize;
+                outBuf.pos = 0;
+                CHECK_Z( ZSTD_CCtx_reset(cctx2, ZSTD_reset_session_and_parameters) );
+                CHECK_Z( ZSTD_CCtx_setParameter(cctx2, ZSTD_c_stableInBuffer, 1) );
+                if (pendingCase == 2) CHECK_Z( ZSTD_CCtx_setParameter(cctx2, ZSTD_c_nbWorkers, 2) );
+                CHECK_Z( ZSTD_compressStream2(cctx2, &outBuf, &inBuf, ZSTD_e_continue) );
+                if (pendingCase == 3) {
+                    frameSize = ZSTD_compress2(cctx2, compressedBuffer, compressedBufferSize, src2, srcSize2);
+                    CHECK_Z(frameSize);
+                } else {
+                    CHECK_Z( ZSTD_CCtx_reset(cctx2, ZSTD_reset_session_only) );
+                    inBuf.src = src2;
+                    inBuf.size = srcSize2;
+                    inBuf.pos = 0;
+                    outBuf.pos = 0;
+                    /* unknown size : keeps multi-threading enabled */
+                    if (pendingCase == 2) CHECK_Z( ZSTD_compressStream2(cctx2, &outBuf, &inBuf, ZSTD_e_flush) );
+                    CHECK(ZSTD_compressStream2(cctx2, &outBuf, &inBuf, ZSTD_e_end) != 0, "compression should be successful and fully flushed");
+                    frameSize = outBuf.pos;
+                }
+                {   size_t const decSize = ZSTD_decompress(decodedBuffer, CNBufferSize, compressedBuffer, frameSize);
+                    CHECK_Z(decSize);
+                    CHECK(decSize != srcSize2, "case %i : regenerated %u bytes, instead of %u", pendingCase, (unsigned)decSize, (unsigned)srcSize2);
+                    CHECK(memcmp(src2, decodedBuffer, srcSize2) != 0, "case %i : regenerated data different from original", pendingCase);
+            }   }
+            ZSTD_freeCCtx(cctx2);
+        }
+        DISPLAYLEVEL(3, "OK \n");
+
+        DISPLAYLEVEL(3, "test%3i : ZSTD_c_stableInBuffer : pending input is checked when compression starts : ", testNb++);
+        {   ZSTD_CCtx* const cctx2 = ZSTD_createCCtx();
+            int violation;
+            assert(cctx2 != NULL);
+            /* 0: different src pointer, 1: ZSTD_c_stableInBuffer disabled */
+            for (violation = 0; violation < 2; violation++) {
+                ZSTD_inBuffer inBuf;
+                ZSTD_outBuffer outBuf;
+                inBuf.src = CNBuffer;
+                inBuf.size = 1 KB;
+                inBuf.pos = 0;
+                outBuf.dst = compressedBuffer;
+                outBuf.size = compressedBufferSize;
+                outBuf.pos = 0;
+                CHECK_Z( ZSTD_CCtx_reset(cctx2, ZSTD_reset_session_and_parameters) );
+                CHECK_Z( ZSTD_CCtx_setParameter(cctx2, ZSTD_c_stableInBuffer, 1) );
+                CHECK_Z( ZSTD_compressStream2(cctx2, &outBuf, &inBuf, ZSTD_e_continue) );
+                if (violation == 0) {
+                    inBuf.src = (const char*)CNBuffer + 1 MB;
+                    inBuf.pos = 0;
+                } else {
+                    CHECK_Z( ZSTD_CCtx_setParameter(cctx2, ZSTD_c_stableInBuffer, 0) );
+                    inBuf.size = 2 KB;
+                }
+                {   size_t const ret = ZSTD_compressStream2(cctx2, &outBuf, &inBuf, ZSTD_e_end);
+                    CHECK(!ZSTD_isError(ret), "case %i : must error", violation);
+                    CHECK(!(ZSTD_getErrorCode(ret) == ZSTD_error_stabilityCondition_notRespected), "case %i : must be this error", violation);
+            }   }
+            ZSTD_freeCCtx(cctx2);
+        }
+        DISPLAYLEVEL(3, "OK \n");
+
+        DISPLAYLEVEL(3, "test%3i : ZSTD_c_stableInBuffer : ZSTD_endStream() on pending input, new context : ", testNb++);
+        {   ZSTD_CCtx* const cctx2 = ZSTD_createCCtx();
+            ZSTD_inBuffer inBuf;
+            ZSTD_outBuffer outBuf;
+            size_t const srcSize2 = 1 KB;
+            assert(cctx2 != NULL);
+            inBuf.src = CNBuffer;
+            inBuf.size = srcSize2;
+            inBuf.pos = 0;
+            outBuf.dst = compressedBuffer;
+            outBuf.size = compressedBufferSize;
+            outBuf.pos = 0;
+            CHECK_Z( ZSTD_CCtx_setParameter(cctx2, ZSTD_c_stableInBuffer, 1) );
+            CHECK_Z( ZSTD_compressStream2(cctx2, &outBuf, &inBuf, ZSTD_e_continue) );
+            CHECK(ZSTD_endStream(cctx2, &outBuf) != 0, "compression should be successful and fully flushed");
+            {   size_t const decSize = ZSTD_decompress(decodedBuffer, CNBufferSize, compressedBuffer, outBuf.pos);
+                CHECK_Z(decSize);
+                CHECK(decSize != srcSize2, "regenerated %u bytes, instead of %u", (unsigned)decSize, (unsigned)srcSize2);
+                CHECK(memcmp(CNBuffer, decodedBuffer, srcSize2) != 0, "regenerated data different from original");
+            }
+            ZSTD_freeCCtx(cctx2);
+        }
+        DISPLAYLEVEL(3, "OK \n");
+
         DISPLAYLEVEL(3, "test%3i : ZSTD_compressStream2() with ZSTD_c_stableOutBuffer only : ", testNb++);
         CHECK_Z(ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters));
         CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1));
@@ -1406,6 +1706,39 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
         DISPLAYLEVEL(3, "OK (%s)\n", ZSTD_getErrorName(r));
     }
 
+    DISPLAYLEVEL(3, "test%3i : prefix is dropped by session reset after a rejected frame header : ", testNb++);
+    {   BYTE const badHeader[6] = { 0x28, 0xB5, 0x2F, 0xFD, 0x08, 0x00 };  /* reserved bit set */
+        CHECK_Z( ZSTD_DCtx_refPrefix(zd, dictionary.start, dictionary.filled) );
+        outBuff.dst = decodedBuffer;
+        outBuff.size = CNBufferSize;
+        outBuff.pos = 0;
+        inBuff.src = badHeader;
+        inBuff.size = sizeof(badHeader);
+        inBuff.pos = 0;
+        if (!ZSTD_isError(ZSTD_decompressStream(zd, &outBuff, &inBuff))) goto _output_error;
+        CHECK_Z( ZSTD_DCtx_reset(zd, ZSTD_reset_session_only) );
+        outBuff.pos = 0;
+        inBuff.src = compressedBuffer;
+        inBuff.size = cSize;
+        inBuff.pos = 0;
+        if (!ZSTD_isError(ZSTD_decompressStream(zd, &outBuff, &inBuff))) goto _output_error;  /* prefix must be gone */
+        CHECK_Z( ZSTD_DCtx_reset(zd, ZSTD_reset_session_only) );
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+    DISPLAYLEVEL(3, "test%3i : prefix survives session reset before any input : ", testNb++);
+    CHECK_Z( ZSTD_DCtx_refPrefix(zd, dictionary.start, dictionary.filled) );
+    CHECK_Z( ZSTD_DCtx_reset(zd, ZSTD_reset_session_only) );
+    outBuff.dst = decodedBuffer;
+    outBuff.size = CNBufferSize;
+    outBuff.pos = 0;
+    inBuff.src = compressedBuffer;
+    inBuff.size = cSize;
+    inBuff.pos = 0;
+    CHECK_Z( ZSTD_decompressStream(zd, &outBuff, &inBuff) );
+    if (outBuff.pos != CNBufferSize) goto _output_error;  /* must regenerate whole input */
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : compress again with ZSTD_compressStream2 : ", testNb++);
     outBuff.dst = compressedBuffer;
     outBuff.size = compressedBufferSize;
@@ -1492,6 +1825,84 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
         if (compressedSize != outBuff.pos) goto _output_error;  /* must be a full valid frame */
     }
     DISPLAYLEVEL(3, "OK \n");
+
+    /* wrong pledgedSrcSize, multithreaded : the frame must span several jobs */
+    {   size_t const jobSize = 1 MB;
+        size_t const srcSize = 4 * jobSize;
+        assert(srcSize <= CNBufferSize);
+        CHECK_Z( ZSTD_CCtx_setParameter(mtctx, ZSTD_c_jobSize, (int)jobSize) );
+
+        DISPLAYLEVEL(3, "test%3i : too large srcSize with multiple threads : %u bytes : ", testNb++, (unsigned)srcSize);
+        {   size_t const r = FUZ_compressWithPledgedSrcSize(mtctx, compressedBuffer, compressedBufferSize, CNBuffer, srcSize, srcSize+1, &cSize);
+            if (ZSTD_getErrorCode(r) != ZSTD_error_srcSize_wrong) goto _output_error;   /* must fail : wrong srcSize */
+            if (!ZSTD_isError(ZSTD_findFrameCompressedSize(compressedBuffer, cSize))) goto _output_error;   /* must not emit a complete frame */
+            DISPLAYLEVEL(3, "OK (error detected : %s) \n", ZSTD_getErrorName(r));
+        }
+
+        /* New input given while the end of a frame is still being flushed belongs to the next frame :
+         * the frame must complete, and the input must be left untouched, like the single-thread path.
+         * With an empty last job, accepting that input used to deadlock. */
+        {   static const char* const variants[3] = { "empty last job", "empty last job, pledged size", "last job with data" };
+            int variant;
+            for (variant = 0; variant < 3; variant++) {
+                size_t const lastChunkSize = (variant == 2) ? jobSize : 0;
+                ZSTD_outBuffer out = { compressedBuffer, compressedBufferSize, 0 };
+                ZSTD_inBuffer in = { CNBuffer, srcSize - lastChunkSize, 0 };
+                size_t r;
+                DISPLAYLEVEL(3, "test%3i : new input while flushing the end of a frame (%s) : ", testNb++, variants[variant]);
+                CHECK_Z( ZSTD_CCtx_reset(mtctx, ZSTD_reset_session_only) );
+                if (variant == 1) CHECK_Z( ZSTD_CCtx_setPledgedSrcSize(mtctx, srcSize) );
+                while (in.pos < in.size)
+                    CHECK_Z( ZSTD_compressStream2(mtctx, &out, &in, ZSTD_e_continue) );
+                do {
+                    r = ZSTD_compressStream2(mtctx, &out, &in, ZSTD_e_flush);   /* posts every job */
+                    CHECK_Z(r);
+                } while (r != 0);
+                in.size = srcSize;    /* last chunk, if any */
+                out.size = out.pos;   /* no room : the frame ends, and stays unfinished */
+                r = ZSTD_compressStream2(mtctx, &out, &in, ZSTD_e_end);
+                CHECK_Z(r);
+                if ((r == 0) || (in.pos != in.size)) goto _output_error;
+                in.pos = 0;   /* new input, for the next frame */
+                out.size = compressedBufferSize;
+                do {
+                    r = ZSTD_compressStream2(mtctx, &out, &in, ZSTD_e_end);   /* must not block */
+                    CHECK_Z(r);
+                } while (r != 0);
+                if (in.pos != 0) goto _output_error;   /* left for the next frame */
+                {   size_t const dSize = ZSTD_decompress(decodedBuffer, decodedBufferSize, compressedBuffer, out.pos);
+                    if (dSize != srcSize) goto _output_error;   /* exactly the first frame */
+                    if (memcmp(decodedBuffer, CNBuffer, srcSize) != 0) goto _output_error;
+                }
+                do {
+                    r = ZSTD_compressStream2(mtctx, &out, &in, ZSTD_e_end);   /* the next frame */
+                    CHECK_Z(r);
+                } while (r != 0);
+                {   size_t const dSize = ZSTD_decompress(decodedBuffer, decodedBufferSize, compressedBuffer, out.pos);
+                    if (dSize != 2 * srcSize) goto _output_error;
+                    if (memcmp((const char*)decodedBuffer + srcSize, CNBuffer, srcSize) != 0) goto _output_error;
+                }
+                DISPLAYLEVEL(3, "OK \n");
+            }
+        }
+
+        DISPLAYLEVEL(3, "test%3i : too small srcSize with multiple threads : %u bytes : ", testNb++, (unsigned)srcSize);
+        {   size_t const r = FUZ_compressWithPledgedSrcSize(mtctx, compressedBuffer, compressedBufferSize, CNBuffer, srcSize, srcSize-1, &cSize);
+            if (ZSTD_getErrorCode(r) != ZSTD_error_srcSize_wrong) goto _output_error;   /* must fail : wrong srcSize */
+            if (cSize != 0) goto _output_error;   /* must fail before emitting anything, like the single-thread path */
+            DISPLAYLEVEL(3, "OK (error detected : %s) \n", ZSTD_getErrorName(r));
+        }
+
+        DISPLAYLEVEL(3, "test%3i : exact srcSize with multiple threads : %u bytes : ", testNb++, (unsigned)srcSize);
+        CHECK_Z( FUZ_compressWithPledgedSrcSize(mtctx, compressedBuffer, compressedBufferSize, CNBuffer, srcSize, srcSize, &cSize) );
+        if (ZSTD_findDecompressedSize(compressedBuffer, cSize) != srcSize) goto _output_error;
+        CHECK_Z( ZSTD_decompress(decodedBuffer, decodedBufferSize, compressedBuffer, cSize) );
+        if (memcmp(decodedBuffer, CNBuffer, srcSize) != 0) goto _output_error;
+        DISPLAYLEVEL(3, "OK \n");
+
+        CHECK_Z( ZSTD_CCtx_reset(mtctx, ZSTD_reset_session_only) );
+        CHECK_Z( ZSTD_CCtx_setParameter(mtctx, ZSTD_c_jobSize, 0) );
+    }
 
     /* Complex multithreading + dictionary test */
     {   U32 const nbWorkers = 2;
@@ -1896,7 +2307,7 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
         CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_checksumFlag, 1));
         /* Write a bunch of 6 byte blocks */
         while (remainingInput > 0) {
-          char testBuffer[6] = "\xAA\xAA\xAA\xAA\xAA\xAA";
+          char testBuffer[6] = { 0x66, 0x66, 0x66, 0x66, 0x66, 0x66 };
           const size_t kSmallBlockSize = sizeof(testBuffer);
           ZSTD_inBuffer in = {testBuffer, kSmallBlockSize, 0};
 
@@ -2298,6 +2709,39 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
     DISPLAYLEVEL(3, "OK \n");
 
 
+    DISPLAYLEVEL(3, "test%3i : Sequence length overflow: ", testNb++);
+    {
+        ZSTD_Sequence const sequences[] = {
+            { 1, 0x80000000U, 0x80000008U, 0 },
+            { 0, 0, 0, 0 }
+        };
+        ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+        size_t const srcSize = 16;
+        int validate;
+        int delimiters;
+        CHECK(cctx == NULL, "Allocation failed");
+        for (validate = 0; validate <= 1; ++validate) {
+            for (delimiters = 0; delimiters <= 1; ++delimiters) {
+                CHECK_Z(ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters));
+                CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_validateSequences, validate));
+                CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, delimiters));
+                cSize = ZSTD_compressSequences(cctx, compressedBuffer, compressedBufferSize,
+                                               sequences, delimiters ? 2 : 1, CNBuffer, srcSize);
+                if (delimiters) {
+                    CHECK(ZSTD_getErrorCode(cSize) != ZSTD_error_externalSequences_invalid,
+                          "Wrong error code: %s", ZSTD_getErrorName(cSize));
+                } else {
+                    CHECK_Z(cSize);
+                    CHECK(ZSTD_decompress(decodedBuffer, srcSize, compressedBuffer, cSize) != srcSize,
+                          "Wrong decompressed size");
+                    CHECK(memcmp(CNBuffer, decodedBuffer, srcSize) != 0, "Corruption!");
+                }
+            }
+        }
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : Testing large offset with small window size: ", testNb++);
     {
         ZSTD_CCtx* cctx = ZSTD_createCCtx();
@@ -2510,6 +2954,53 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
         ZSTD_freeCCtx(cctx);
         ZSTD_freeDCtx(dctx);
     }
+    DISPLAYLEVEL(3, "OK \n");
+
+#ifdef ZSTD_MULTITHREAD
+    /* Freeing or resetting the context must wait for the jobs still running,
+     * since they use its dictionary, pools and jobs table */
+    DISPLAYLEVEL(3, "test%3i : abandon a multi-threaded frame with a job in progress : ", testNb++);
+    {   size_t const jobSize = 1 MB;
+        const void* const dict = (const char*)CNBuffer + 2 * jobSize;
+        int scenario;
+        for (scenario = 0; scenario < 5; scenario++) {
+            ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+            ZSTD_threadPool* const pool = (scenario == 1) ? ZSTD_createThreadPool(1) : NULL;
+            ZSTD_inBuffer in = { CNBuffer, (scenario == 2) ? 0 : jobSize, 0 };
+            ZSTD_outBuffer out = { compressedBuffer, compressedBufferSize, 0 };
+            CHECK(cctx == NULL, "ZSTD_createCCtx failed");
+            CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 10) );
+            CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, 1) );
+            CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_jobSize, (int)jobSize) );
+            if (pool != NULL) CHECK_Z( ZSTD_CCtx_refThreadPool(cctx, pool) );
+            CHECK_Z( ZSTD_CCtx_loadDictionary(cctx, dict, 1 MB) );   /* makes the first job slow */
+            CHECK_Z( ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_continue) );   /* starts the first job, if any */
+            if (scenario == 2) {
+                /* empty frame : its only job is empty, and still runs when
+                 * ZSTD_e_end returns because the output buffer is full */
+                out.size = out.pos;
+                CHECK_Z( ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_end) );
+            }
+            if (scenario == 4) {
+                /* the second job is prepared, and waits until the worker is free */
+                in.size = 2 * jobSize;
+                CHECK_Z( ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_continue) );
+            }
+            if (scenario >= 3) {
+                /* abandon the frame, change the dictionary, and compress a new frame */
+                CHECK_Z( ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only) );
+                CHECK_Z( ZSTD_CCtx_loadDictionary(cctx, dict, 512 KB) );
+                CHECK_Z( ZSTD_compress2(cctx, compressedBuffer, compressedBufferSize, CNBuffer, jobSize) );
+            }
+            ZSTD_freeCCtx(cctx);   /* scenarios 0 to 2 free it with a job in progress */
+            ZSTD_freeThreadPool(pool);
+        }
+    }
+    DISPLAYLEVEL(3, "OK \n");
+#endif
+
+    DISPLAYLEVEL(3, "test%3i : frame-completion checks and tracing : ", testNb++);
+    CHECK(FUZ_testFrameCompletion(seed, testNb), "frame-completion tests failed");
     DISPLAYLEVEL(3, "OK \n");
 
 _end:

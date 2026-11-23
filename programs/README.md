@@ -3,8 +3,8 @@ Command Line Interface for Zstandard library
 
 Command Line Interface (CLI) can be created using the `make` command without any additional parameters.
 There are however other Makefile targets that create different variations of CLI:
-- `zstd` : default CLI supporting gzip-like arguments; includes dictionary builder, benchmark, and supports decompression of legacy zstd formats
-- `zstd_nolegacy` : Same as `zstd` but without support for legacy zstd formats
+- `zstd` : default CLI supporting gzip-like arguments; includes dictionary builder and benchmark
+- `zstd_nolegacy` : Same as `zstd` but with support for legacy zstd formats explicitly disabled
 - `zstd-small` : CLI optimized for minimal size; no dictionary builder, no benchmark, and no support for legacy zstd formats
 - `zstd-compress` : version of CLI which can only compress into zstd format
 - `zstd-decompress` : version of CLI which can only decompress zstd format
@@ -23,11 +23,12 @@ There are however other Makefile targets that create different variations of CLI
 - __ZSTD_LEGACY_SUPPORT__ : `zstd` can decompress files compressed by older versions of `zstd`.
   Starting v0.8.0, all versions of `zstd` produce frames compliant with the [specification](../doc/zstd_compression_format.md), and are therefore compatible.
   But older versions (< v0.8.0) produced different, incompatible, frames.
-  By default, `zstd` supports decoding legacy formats >= v0.4.0 (`ZSTD_LEGACY_SUPPORT=4`).
+  Since v1.6.0, legacy format support is disabled by default (`ZSTD_LEGACY_SUPPORT=0`).
   This can be altered by modifying this compilation variable.
   `ZSTD_LEGACY_SUPPORT=1` means "support all formats >= v0.1.0".
   `ZSTD_LEGACY_SUPPORT=2` means "support all formats >= v0.2.0", and so on.
   `ZSTD_LEGACY_SUPPORT=0` means _DO NOT_ support any legacy format.
+  Example : `make zstd ZSTD_LEGACY_SUPPORT=4`
   if `ZSTD_LEGACY_SUPPORT >= 8`, it's the same as `0`, since there is no legacy format after `7`.
   Note : `zstd` only supports decoding older formats, and cannot generate any legacy format.
 
@@ -78,6 +79,13 @@ There are however other Makefile targets that create different variations of CLI
   The resulting binary will only be able to compress files.
   This can be useful to produce smaller binaries.
   A corresponding `Makefile` target using this ability is `zstd-compress`.
+
+- __ZSTD_DISPLAY_LEVEL_DEFAULT__ : Controls the default verbosity level of `zstd` output.
+  The default value is `2`. Lower values (e.g., `1`) reduce output verbosity,
+  while higher values (e.g., `3`) increase it.
+  This allows setting preferred verbosity at compile time,
+  rather than passing `-q` or `-v` flags at runtime.
+  Example : `CPPFLAGS="-DZSTD_DISPLAY_LEVEL_DEFAULT=1" make`
 
 - __BACKTRACE__ : `zstd` can display a stack backtrace when execution
   generates a runtime exception. By default, this feature may be
@@ -153,7 +161,7 @@ Usage: zstd [OPTIONS...] [INPUT... | -] [-o OUTPUT]
 Options:
   -o OUTPUT                     Write output to a single file, OUTPUT.
   -k, --keep                    Preserve INPUT file(s). [Default]
-  --rm                          Remove INPUT file(s) after successful (de)compression.
+  --rm                          Remove INPUT file(s) after successful (de)compression to file.
 
   -#                            Desired compression level, where `#` is a number between 1 and 19;
                                 lower numbers provide faster compression, higher numbers yield
@@ -194,12 +202,13 @@ Advanced options:
 
 Advanced compression options:
   --ultra                       Enable levels beyond 19, up to 22; requires more memory.
+  --max                         Enable the maximum compression settings.
   --fast[=#]                    Use to very fast compression levels. [Default: 1]
   --adapt                       Dynamically adapt compression level to I/O conditions.
   --long[=#]                    Enable long distance matching with window log #. [Default: 27]
   --patch-from=REF              Use REF as the reference point for Zstandard's diff engine.
 
-  -T#                           Spawn # compression threads. [Default: 1; pass 0 for core count.]
+  -T#                           Spawn # compression threads. [Default: 1-4, depending on logical cores; pass 0 for core count.]
   --single-thread               Share a single thread for I/O and compression (slightly different than `-T1`).
   --auto-threads={physical|logical}
                                 Use physical/logical cores when using `-T0`. [Default: Physical]
@@ -224,7 +233,7 @@ Advanced compression options:
   --format=gzip                 Compress files to the `.gz` format.
   --format=xz                   Compress files to the `.xz` format.
   --format=lzma                 Compress files to the `.lzma` format.
-  --format=lz4                 Compress files to the `.lz4` format.
+  --format=lz4                  Compress files to the `.lz4` format.
 
 Advanced decompression options:
   -l                            Print information about Zstandard-compressed files.

@@ -5,6 +5,7 @@ fullbench-lib
 fuzzer
 fuzzer32
 fuzzer-dll
+largeDictionary
 zbufftest
 zbufftest32
 zbufftest-dll

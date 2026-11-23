@@ -215,6 +215,10 @@ struct ZSTD_seekable_s {
     ZSTD_seekable_customFile src;
 
     U64 decompressedOffset;
+    /* (U32)-1 means no frame is ready for decompression. Otherwise this is
+     * the current frame index. Set to -1 before seeking, so a failed seek
+     * forces the next call to retry setup. Set to targetFrame only after
+     * the seek succeeds and the decompression state is initialized. */
     U32 curFrame;
 
     BYTE inBuff[SEEKABLE_BUFF_SIZE]; /* need to do our own input buffering */
@@ -299,7 +303,7 @@ unsigned ZSTD_seekTable_offsetToFrameIndex(const ZSTD_seekTable* st, unsigned lo
     U32 hi = (U32)st->tableLen;
     assert(st->tableLen <= UINT_MAX);
 
-    if (pos >= st->entries[st->tableLen].dOffset) {
+    if (hi == 0 || pos >= st->entries[st->tableLen].dOffset) {
         return (unsigned)st->tableLen;
     }
 
@@ -366,7 +370,7 @@ size_t ZSTD_seekable_getFrameDecompressedSize(const ZSTD_seekable* zs, unsigned 
 
 size_t ZSTD_seekTable_getFrameDecompressedSize(const ZSTD_seekTable* st, unsigned frameIndex)
 {
-    if (frameIndex > st->tableLen) return ERROR(frameIndex_tooLarge);
+    if (frameIndex >= st->tableLen) return ERROR(frameIndex_tooLarge);
     return st->entries[frameIndex + 1].dOffset -
            st->entries[frameIndex].dOffset;
 }
@@ -397,6 +401,13 @@ static size_t ZSTD_seekable_loadSeekTable(ZSTD_seekable* zs)
         U32 const frameSize = tableSize + ZSTD_seekTableFooterSize + ZSTD_SKIPPABLEHEADERSIZE;
 
         U32 remaining = frameSize - ZSTD_seekTableFooterSize; /* don't need to re-read footer */
+
+        /* numFrames is bounded by the format (the compressor never writes more
+         * than ZSTD_SEEKABLE_MAXFRAMES). A larger value can only come from a
+         * corrupt footer and overflows the tableSize/frameSize math above, so
+         * reject it before those values are used to seek or size the table. */
+        if (numFrames > ZSTD_SEEKABLE_MAXFRAMES) return ERROR(corruption_detected);
+
         {   U32 const toRead = MIN(remaining, SEEKABLE_BUFF_SIZE);
             CHECK_IO(src.seek(src.opaque, -(S64)frameSize, SEEK_END));
             CHECK_IO(src.read(src.opaque, zs->inBuff, toRead));
@@ -428,7 +439,10 @@ static size_t ZSTD_seekable_loadSeekTable(ZSTD_seekable* zs)
                     U32 const offset = SEEKABLE_BUFF_SIZE - pos;
                     U32 const toRead = MIN(remaining, SEEKABLE_BUFF_SIZE - offset);
                     memmove(zs->inBuff, zs->inBuff + pos, offset); /* move any data we haven't read yet */
-                    CHECK_IO(src.read(src.opaque, zs->inBuff+offset, toRead));
+                    if (src.read(src.opaque, zs->inBuff+offset, toRead) < 0) {
+                        free(entries);
+                        return ERROR(seekableIO);
+                    }
                     remaining -= toRead;
                     pos = 0;
                 }
@@ -473,24 +487,34 @@ size_t ZSTD_seekable_initFile(ZSTD_seekable* zs, FILE* src)
 
 size_t ZSTD_seekable_initAdvanced(ZSTD_seekable* zs, ZSTD_seekable_customFile src)
 {
-    zs->src = src;
-
-    {   const size_t seekTableInit = ZSTD_seekable_loadSeekTable(zs);
-        if (ZSTD_isError(seekTableInit)) return seekTableInit; }
-
+    /* Reinitialization discards the previous archive, even on failure.
+     * A NULL entries pointer marks a context that is not initialized. */
+    free(zs->seekTable.entries);
+    zs->seekTable = (ZSTD_seekTable){NULL, 0, 0};
     zs->decompressedOffset = (U64)-1;
     zs->curFrame = (U32)-1;
+    /* Discard buffered input from the previous source, even on failure. */
+    zs->in = (ZSTD_inBuffer){zs->inBuff, 0, 0};
+    zs->src = src;
+    /* When not reading from a buffer via initBuff() clear the buffWrapper
+     * to avoid inheriting its state. */
+    if (src.opaque != &zs->buffWrapper) {
+        zs->buffWrapper = (buffWrapper_t){NULL, 0, 0};
+    }
 
     {   const size_t dstreamInit = ZSTD_initDStream(zs->dstream);
         if (ZSTD_isError(dstreamInit)) return dstreamInit; }
-    return 0;
+    /* Publish the new seek table only after all initialization has succeeded. */
+    return ZSTD_seekable_loadSeekTable(zs);
 }
 
-size_t ZSTD_seekable_decompress(ZSTD_seekable* zs, void* dst, size_t len, unsigned long long offset)
+static size_t ZSTD_seekable_decompress_internal(ZSTD_seekable* zs, void* dst, size_t len, unsigned long long offset)
 {
+    if (zs->seekTable.entries == NULL) return ERROR(init_missing);
     unsigned long long const eos = zs->seekTable.entries[zs->seekTable.tableLen].dOffset;
-    if (offset + len > eos) {
-        len = eos - offset;
+    if (offset > eos) return ERROR(parameter_outOfBound);
+    if (len > eos - offset) {
+        len = (size_t)(eos - offset);
     }
 
     U32 targetFrame = ZSTD_seekable_offsetToFrameIndex(zs, offset);
@@ -499,8 +523,9 @@ size_t ZSTD_seekable_decompress(ZSTD_seekable* zs, void* dst, size_t len, unsign
     do {
         /* check if we can continue from a previous decompress job */
         if (targetFrame != zs->curFrame || offset < zs->decompressedOffset) {
-            zs->decompressedOffset = zs->seekTable.entries[targetFrame].dOffset;
-            zs->curFrame = targetFrame;
+            /* A failed seek must force the next call to reset the stream,
+             * rather than reuse uninitialized or stale input state. */
+            zs->curFrame = (U32)-1;
 
             assert(zs->seekTable.entries[targetFrame].cOffset < LLONG_MAX);
             CHECK_IO(zs->src.seek(zs->src.opaque,
@@ -512,6 +537,8 @@ size_t ZSTD_seekable_decompress(ZSTD_seekable* zs, void* dst, size_t len, unsign
             if (zs->buffWrapper.size && srcBytesRead > zs->buffWrapper.size) {
                 return ERROR(seekableIO);
             }
+            zs->decompressedOffset = zs->seekTable.entries[targetFrame].dOffset;
+            zs->curFrame = targetFrame;
         }
 
         while (zs->decompressedOffset < offset + len) {
@@ -552,6 +579,13 @@ size_t ZSTD_seekable_decompress(ZSTD_seekable* zs, void* dst, size_t len, unsign
             if (toRead == 0) {
                 /* frame complete */
 
+                /* A completed frame must end at its declared boundary;
+                 * otherwise the table could re-select this frame and loop. */
+                assert(targetFrame < zs->seekTable.tableLen);
+                if (zs->decompressedOffset != zs->seekTable.entries[targetFrame + 1].dOffset) {
+                    return ERROR(corruption_detected);
+                }
+
                 /* verify checksum */
                 if (zs->seekTable.checksumFlag &&
                     (XXH64_digest(&zs->xxhState) & 0xFFFFFFFFU) !=
@@ -560,10 +594,11 @@ size_t ZSTD_seekable_decompress(ZSTD_seekable* zs, void* dst, size_t len, unsign
                 }
 
                 if (zs->decompressedOffset < offset + len) {
-                    /* go back to the start and force a reset of the stream */
-                    targetFrame = ZSTD_seekable_offsetToFrameIndex(zs, zs->decompressedOffset);
-                    /* in this case it will fail later with corruption_detected, since last block does not have checksum */
-                    assert(targetFrame != zs->seekTable.tableLen);
+                    /* The checked boundary must advance to a later entry. */
+                    U32 const nextFrame = ZSTD_seekable_offsetToFrameIndex(zs, zs->decompressedOffset);
+                    assert(nextFrame > targetFrame);
+                    assert(nextFrame < zs->seekTable.tableLen);
+                    targetFrame = nextFrame;
                 }
                 break;
             }
@@ -581,8 +616,18 @@ size_t ZSTD_seekable_decompress(ZSTD_seekable* zs, void* dst, size_t len, unsign
     return len;
 }
 
+size_t ZSTD_seekable_decompress(ZSTD_seekable* zs, void* dst, size_t len, unsigned long long offset)
+{
+    size_t const result = ZSTD_seekable_decompress_internal(zs, dst, len, offset);
+    /* A failed read may have advanced the source, or the decoder may be in
+     * an error state. Force the next request to seek and reset its frame. */
+    if (ZSTD_isError(result)) zs->curFrame = (U32)-1;
+    return result;
+}
+
 size_t ZSTD_seekable_decompressFrame(ZSTD_seekable* zs, void* dst, size_t dstSize, unsigned frameIndex)
 {
+    if (zs->seekTable.entries == NULL) return ERROR(init_missing);
     if (frameIndex >= zs->seekTable.tableLen) {
         return ERROR(frameIndex_tooLarge);
     }

@@ -17,7 +17,7 @@ else
 DIFF ?= diff
 endif
 
-HARNESS_FILES=*.c
+HARNESS_FILES=harness.c zstd_decompress.c
 
 MULTITHREAD_LDFLAGS = -pthread
 DEBUGFLAGS= -g -DZSTD_DEBUG=1
@@ -36,11 +36,32 @@ FLAGS     = $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(MULTITHREAD_LDFLAGS)
 harness: $(HARNESS_FILES)
 	$(CC) $(FLAGS) $^ -o $@
 
+.PHONY: clean test test-unit
+
+unit_tests: unit_tests.c zstd_decompress.c zstd_decompress.h
+	$(CC) $(FLAGS) $< -o $@
+
+test-unit: unit_tests
+	@./unit_tests valid
+	# Rejected inputs exit(1) without unwinding their allocations.
+	@set -eu; \
+	for case in $$(./unit_tests --list); do \
+		edu_expected=$$(./unit_tests --expect "$$case"); \
+		edu_status=0; \
+		edu_actual=$$(ASAN_OPTIONS="$${ASAN_OPTIONS:+$${ASAN_OPTIONS}:}detect_leaks=0" \
+			./unit_tests "$$case" 2>&1) || edu_status=$$?; \
+		if test "$$edu_status" -ne 1 || test "$$edu_actual" != "$$edu_expected"; then \
+			printf '%s\n' "$$case: expected rejection, got status $$edu_status" "$$edu_actual"; \
+			exit 1; \
+		fi; \
+	done; \
+	printf '%s\n' 'Educational decoder unit tests passed'
+
 clean:
-	@$(RM) harness *.o
+	@$(RM) harness unit_tests *.o
 	@$(RM) -rf harness.dSYM  # MacOS specific
 
-test: harness
+test: harness test-unit
 	#
 	# Testing single-file decompression with educational decoder
 	#

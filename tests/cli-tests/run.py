@@ -640,7 +640,7 @@ if __name__ == "__main__":
         help="Preserve the scratch directory TEST_DIR/scratch/ for debugging purposes."
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose test output.")
-    parser.add_argument("--timeout", default=200, type=int, help="Test case timeout in seconds. Set to 0 to disable timeouts.")
+    parser.add_argument("--timeout", default=800, type=int, help="Test case timeout in seconds. Set to 0 to disable timeouts.")
     parser.add_argument(
         "--exec-prefix",
         default=None,
@@ -705,6 +705,7 @@ if __name__ == "__main__":
     env["DATAGEN_BIN"] = os.path.abspath(args.datagen)
     env["ZSTDGREP_BIN"] = os.path.abspath(args.zstdgrep)
     env["ZSTDLESS_BIN"] = os.path.abspath(args.zstdless)
+    env["CLI_TESTS"] = os.path.abspath(args.test_dir)
     env["COMMON"] = os.path.abspath(os.path.join(args.test_dir, "common"))
     env["PATH"] = bin_dir + ":" + os.getenv("PATH", "")
     env["LC_ALL"] = "C"

@@ -159,15 +159,15 @@ static result_t compress_cctx_compress(
         return result_error(result_error_skip);
 
     int const level = config_get_level(config);
-
+    result_t result;
     ZSTD_CCtx* cctx = ZSTD_createCCtx();
     ZSTD_DCtx* dctx = ZSTD_createDCtx();
     if (cctx == NULL || dctx == NULL) {
         fprintf(stderr, "context creation failed\n");
-        return result_error(result_error_system_error);
+        result = result_error(result_error_system_error);
+        goto out;
     }
 
-    result_t result;
     result_data_t data = {.total_size = 0};
     for (size_t i = 0; i < state->inputs.size; ++i) {
         data_buffer_t const input = state->inputs.buffers[i];

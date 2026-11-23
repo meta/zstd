@@ -46,9 +46,11 @@ release : STDFLAGS =
 release : DEBUGFLAGS =
 release : all
 
-all: fitblk example zwrapbench minigzip
+all: fitblk example zwrapbench minigzip gzfinishtest
 
-test: example fitblk example_zstd fitblk_zstd zwrapbench minigzip minigzip_zstd
+test: example fitblk example_zstd fitblk_zstd zwrapbench minigzip minigzip_zstd gzfinishtest gzfinishtest_zstd
+	./gzfinishtest
+	./gzfinishtest_zstd
 	./example
 	./example_zstd
 	./fitblk 10240 <$(TEST_FILE)
@@ -69,8 +71,10 @@ test: example fitblk example_zstd fitblk_zstd zwrapbench minigzip minigzip_zstd
 .PHONY: test-valgrind
 #test-valgrind: ZSTDLIBRARY = $(ZSTDLIBDIR)/libzstd.so
 test-valgrind: VALGRIND = LD_LIBRARY_PATH=$(ZSTDLIBDIR) valgrind --track-origins=yes --leak-check=full --error-exitcode=1
-test-valgrind: clean example fitblk example_zstd fitblk_zstd zwrapbench
+test-valgrind: clean example fitblk example_zstd fitblk_zstd zwrapbench gzfinishtest gzfinishtest_zstd
 	@echo "\n ---- valgrind tests ----"
+	$(VALGRIND) ./gzfinishtest
+	$(VALGRIND) ./gzfinishtest_zstd
 	$(VALGRIND) ./example
 	$(VALGRIND) ./example_zstd
 	$(VALGRIND) ./fitblk 10240 <$(TEST_FILE)
@@ -82,6 +86,12 @@ test-valgrind: clean example fitblk example_zstd fitblk_zstd zwrapbench
 
 #.c.o:
 #	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+gzfinishtest: gzfinishtest.o zstd_zlibwrapper.o $(GZFILES) $(ZSTDLIBRARY)
+	$(LINK.o) $^ $(LDLIBS) $(OUTPUT_OPTION)
+
+gzfinishtest_zstd: gzfinishtest.o zstdTurnedOn_zlibwrapper.o $(GZFILES) $(ZSTDLIBRARY)
+	$(LINK.o) $^ $(LDLIBS) $(OUTPUT_OPTION)
 
 minigzip: minigzip.o zstd_zlibwrapper.o $(GZFILES) $(ZSTDLIBRARY)
 
@@ -116,5 +126,5 @@ $(ZSTDLIBDIR)/libzstd.so:
 
 
 clean:
-	-$(RM) $(ZLIBWRAPPER_PATH)/*.o $(EXAMPLE_PATH)/*.o *.o foo.gz example$(EXT) example_zstd$(EXT) fitblk$(EXT) fitblk_zstd$(EXT) zwrapbench$(EXT) minigzip$(EXT) minigzip_zstd$(EXT)
+	-$(RM) $(ZLIBWRAPPER_PATH)/*.o $(EXAMPLE_PATH)/*.o *.o foo.gz example$(EXT) example_zstd$(EXT) fitblk$(EXT) fitblk_zstd$(EXT) zwrapbench$(EXT) minigzip$(EXT) minigzip_zstd$(EXT) gzfinishtest$(EXT) gzfinishtest_zstd$(EXT)
 	@echo Cleaning completed

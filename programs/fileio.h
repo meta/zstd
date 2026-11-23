@@ -70,7 +70,7 @@ void FIO_setAdaptiveMode(FIO_prefs_t* const prefs, int adapt);
 void FIO_setAdaptMin(FIO_prefs_t* const prefs, int minCLevel);
 void FIO_setAdaptMax(FIO_prefs_t* const prefs, int maxCLevel);
 void FIO_setUseRowMatchFinder(FIO_prefs_t* const prefs, int useRowMatchFinder);
-void FIO_setBlockSize(FIO_prefs_t* const prefs, int blockSize);
+void FIO_setJobSize(FIO_prefs_t* const prefs, int jobSize);
 void FIO_setChecksumFlag(FIO_prefs_t* const prefs, int checksumFlag);
 void FIO_setDictIDFlag(FIO_prefs_t* const prefs, int dictIDFlag);
 void FIO_setLdmBucketSizeLog(FIO_prefs_t* const prefs, int ldmBucketSizeLog);
@@ -151,9 +151,11 @@ int FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
                                     const char* dictFileName);
 
 /* FIO_checkFilenameCollisions() :
- * Checks for and warns if there are any files that would have the same output path
+ * Checks for files that would have the same output path.
+ * NULL entries in filenameTable are ignored.
+ * Returns non-zero if there is any collision.
  */
-int FIO_checkFilenameCollisions(const char** filenameTable, unsigned nbFiles);
+int FIO_checkFilenameCollisions(const char* const* filenameTable, unsigned nbFiles);
 
 
 

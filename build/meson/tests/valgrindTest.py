@@ -19,7 +19,7 @@ def valgrindTest(valgrind, datagen, fuzzer, zstd, fullbench):
 
   subprocess.check_call([*VALGRIND_ARGS, datagen, '-g50M'], stdout=subprocess.DEVNULL)
 
-  if subprocess.call([*VALGRIND_ARGS, zstd],
+  if subprocess.call([*VALGRIND_ARGS, zstd, '--fake-stdin-is-console'],
                      stdout=subprocess.DEVNULL) == 0:
     raise subprocess.SubprocessError('zstd without argument should have failed')
 

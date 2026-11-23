@@ -111,9 +111,9 @@ silesia,                            level 9,                            zstdcli,
 silesia,                            level 13,                           zstdcli,                            4488438
 silesia,                            level 16,                           zstdcli,                            4358150
 silesia,                            level 19,                           zstdcli,                            4265929
-silesia,                            long distance mode,                 zstdcli,                            4824341
+silesia,                            long distance mode,                 zstdcli,                            4824322
 silesia,                            multithreaded,                      zstdcli,                            4833113
-silesia,                            multithreaded long distance mode,   zstdcli,                            4824341
+silesia,                            multithreaded long distance mode,   zstdcli,                            4824322
 silesia,                            small window log,                   zstdcli,                            7094528
 silesia,                            small hash log,                     zstdcli,                            6527214
 silesia,                            small chain log,                    zstdcli,                            4911647
@@ -137,9 +137,9 @@ silesia.tar,                        level 13,                           zstdcli,
 silesia.tar,                        level 16,                           zstdcli,                            4357018
 silesia.tar,                        level 19,                           zstdcli,                            4259593
 silesia.tar,                        no source size,                     zstdcli,                            4836000
-silesia.tar,                        long distance mode,                 zstdcli,                            4827830
+silesia.tar,                        long distance mode,                 zstdcli,                            4827730
 silesia.tar,                        multithreaded,                      zstdcli,                            4836004
-silesia.tar,                        multithreaded long distance mode,   zstdcli,                            4827830
+silesia.tar,                        multithreaded long distance mode,   zstdcli,                            4827730
 silesia.tar,                        small window log,                   zstdcli,                            7100110
 silesia.tar,                        small hash log,                     zstdcli,                            6530127
 silesia.tar,                        small chain log,                    zstdcli,                            4915865
@@ -217,9 +217,9 @@ github.tar,                         level 19,                           zstdcli,
 github.tar,                         level 19 with dict,                 zstdcli,                            32705
 github.tar,                         no source size,                     zstdcli,                            38885
 github.tar,                         no source size with dict,           zstdcli,                            38115
-github.tar,                         long distance mode,                 zstdcli,                            40143
+github.tar,                         long distance mode,                 zstdcli,                            40140
 github.tar,                         multithreaded,                      zstdcli,                            38888
-github.tar,                         multithreaded long distance mode,   zstdcli,                            40143
+github.tar,                         multithreaded long distance mode,   zstdcli,                            40140
 github.tar,                         small window log,                   zstdcli,                            198539
 github.tar,                         small hash log,                     zstdcli,                            129874
 github.tar,                         small chain log,                    zstdcli,                            41673
@@ -251,9 +251,9 @@ silesia,                            level 13,                           advanced
 silesia,                            level 16,                           advanced one pass,                  4356799
 silesia,                            level 19,                           advanced one pass,                  4265851
 silesia,                            no source size,                     advanced one pass,                  4832054
-silesia,                            long distance mode,                 advanced one pass,                  4823264
+silesia,                            long distance mode,                 advanced one pass,                  4823219
 silesia,                            multithreaded,                      advanced one pass,                  4833065
-silesia,                            multithreaded long distance mode,   advanced one pass,                  4824293
+silesia,                            multithreaded long distance mode,   advanced one pass,                  4824274
 silesia,                            small window log,                   advanced one pass,                  7094480
 silesia,                            small hash log,                     advanced one pass,                  6525510
 silesia,                            small chain log,                    advanced one pass,                  4912248
@@ -285,9 +285,9 @@ silesia.tar,                        level 13,                           advanced
 silesia.tar,                        level 16,                           advanced one pass,                  4355572
 silesia.tar,                        level 19,                           advanced one pass,                  4257629
 silesia.tar,                        no source size,                     advanced one pass,                  4829268
-silesia.tar,                        long distance mode,                 advanced one pass,                  4815868
+silesia.tar,                        long distance mode,                 advanced one pass,                  4815801
 silesia.tar,                        multithreaded,                      advanced one pass,                  4836000
-silesia.tar,                        multithreaded long distance mode,   advanced one pass,                  4827826
+silesia.tar,                        multithreaded long distance mode,   advanced one pass,                  4827726
 silesia.tar,                        small window log,                   advanced one pass,                  7100064
 silesia.tar,                        small hash log,                     advanced one pass,                  6530222
 silesia.tar,                        small chain log,                    advanced one pass,                  4915689
@@ -535,9 +535,9 @@ github.tar,                         level 19 with dict copy,            advanced
 github.tar,                         level 19 with dict load,            advanced one pass,                  32428
 github.tar,                         no source size,                     advanced one pass,                  38884
 github.tar,                         no source size with dict,           advanced one pass,                  37995
-github.tar,                         long distance mode,                 advanced one pass,                  40156
+github.tar,                         long distance mode,                 advanced one pass,                  40134
 github.tar,                         multithreaded,                      advanced one pass,                  38884
-github.tar,                         multithreaded long distance mode,   advanced one pass,                  40139
+github.tar,                         multithreaded long distance mode,   advanced one pass,                  40136
 github.tar,                         small window log,                   advanced one pass,                  198535
 github.tar,                         small hash log,                     advanced one pass,                  129870
 github.tar,                         small chain log,                    advanced one pass,                  41669
@@ -569,9 +569,9 @@ silesia,                            level 13,                           advanced
 silesia,                            level 16,                           advanced one pass small out,        4356799
 silesia,                            level 19,                           advanced one pass small out,        4265851
 silesia,                            no source size,                     advanced one pass small out,        4832054
-silesia,                            long distance mode,                 advanced one pass small out,        4823264
+silesia,                            long distance mode,                 advanced one pass small out,        4823219
 silesia,                            multithreaded,                      advanced one pass small out,        4833065
-silesia,                            multithreaded long distance mode,   advanced one pass small out,        4824293
+silesia,                            multithreaded long distance mode,   advanced one pass small out,        4824274
 silesia,                            small window log,                   advanced one pass small out,        7094480
 silesia,                            small hash log,                     advanced one pass small out,        6525510
 silesia,                            small chain log,                    advanced one pass small out,        4912248
@@ -603,9 +603,9 @@ silesia.tar,                        level 13,                           advanced
 silesia.tar,                        level 16,                           advanced one pass small out,        4355572
 silesia.tar,                        level 19,                           advanced one pass small out,        4257629
 silesia.tar,                        no source size,                     advanced one pass small out,        4829268
-silesia.tar,                        long distance mode,                 advanced one pass small out,        4815868
+silesia.tar,                        long distance mode,                 advanced one pass small out,        4815801
 silesia.tar,                        multithreaded,                      advanced one pass small out,        4836000
-silesia.tar,                        multithreaded long distance mode,   advanced one pass small out,        4827826
+silesia.tar,                        multithreaded long distance mode,   advanced one pass small out,        4827726
 silesia.tar,                        small window log,                   advanced one pass small out,        7100064
 silesia.tar,                        small hash log,                     advanced one pass small out,        6530222
 silesia.tar,                        small chain log,                    advanced one pass small out,        4915689
@@ -853,9 +853,9 @@ github.tar,                         level 19 with dict copy,            advanced
 github.tar,                         level 19 with dict load,            advanced one pass small out,        32428
 github.tar,                         no source size,                     advanced one pass small out,        38884
 github.tar,                         no source size with dict,           advanced one pass small out,        37995
-github.tar,                         long distance mode,                 advanced one pass small out,        40156
+github.tar,                         long distance mode,                 advanced one pass small out,        40134
 github.tar,                         multithreaded,                      advanced one pass small out,        38884
-github.tar,                         multithreaded long distance mode,   advanced one pass small out,        40139
+github.tar,                         multithreaded long distance mode,   advanced one pass small out,        40136
 github.tar,                         small window log,                   advanced one pass small out,        198535
 github.tar,                         small hash log,                     advanced one pass small out,        129870
 github.tar,                         small chain log,                    advanced one pass small out,        41669
@@ -887,9 +887,9 @@ silesia,                            level 13,                           advanced
 silesia,                            level 16,                           advanced streaming,                 4358094
 silesia,                            level 19,                           advanced streaming,                 4265908
 silesia,                            no source size,                     advanced streaming,                 4835768
-silesia,                            long distance mode,                 advanced streaming,                 4827032
+silesia,                            long distance mode,                 advanced streaming,                 4827001
 silesia,                            multithreaded,                      advanced streaming,                 4833065
-silesia,                            multithreaded long distance mode,   advanced streaming,                 4824293
+silesia,                            multithreaded long distance mode,   advanced streaming,                 4824274
 silesia,                            small window log,                   advanced streaming,                 7110591
 silesia,                            small hash log,                     advanced streaming,                 6525259
 silesia,                            small chain log,                    advanced streaming,                 4911577
@@ -921,9 +921,9 @@ silesia.tar,                        level 13,                           advanced
 silesia.tar,                        level 16,                           advanced streaming,                 4358029
 silesia.tar,                        level 19,                           advanced streaming,                 4258228
 silesia.tar,                        no source size,                     advanced streaming,                 4846779
-silesia.tar,                        long distance mode,                 advanced streaming,                 4825842
+silesia.tar,                        long distance mode,                 advanced streaming,                 4825753
 silesia.tar,                        multithreaded,                      advanced streaming,                 4836000
-silesia.tar,                        multithreaded long distance mode,   advanced streaming,                 4827826
+silesia.tar,                        multithreaded long distance mode,   advanced streaming,                 4827726
 silesia.tar,                        small window log,                   advanced streaming,                 7117024
 silesia.tar,                        small hash log,                     advanced streaming,                 6529503
 silesia.tar,                        small chain log,                    advanced streaming,                 4915956
@@ -1171,9 +1171,9 @@ github.tar,                         level 19 with dict copy,            advanced
 github.tar,                         level 19 with dict load,            advanced streaming,                 32428
 github.tar,                         no source size,                     advanced streaming,                 38881
 github.tar,                         no source size with dict,           advanced streaming,                 38111
-github.tar,                         long distance mode,                 advanced streaming,                 40156
+github.tar,                         long distance mode,                 advanced streaming,                 40134
 github.tar,                         multithreaded,                      advanced streaming,                 38884
-github.tar,                         multithreaded long distance mode,   advanced streaming,                 40139
+github.tar,                         multithreaded long distance mode,   advanced streaming,                 40136
 github.tar,                         small window log,                   advanced streaming,                 199553
 github.tar,                         small hash log,                     advanced streaming,                 129870
 github.tar,                         small chain log,                    advanced streaming,                 41669

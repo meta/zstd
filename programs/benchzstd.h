@@ -92,9 +92,9 @@ typedef enum {
 } BMK_mode_t;
 
 typedef struct {
-    BMK_mode_t mode;        /* 0: all, 1: compress only 2: decode only */
+    BMK_mode_t mode;        /* 0: both, 1: compress only 2: decode only */
     unsigned nbSeconds;     /* default timing is in nbSeconds */
-    size_t blockSize;       /* Maximum size of each block*/
+    size_t chunkSizeMax;    /* Maximum size of each independent chunk */
     size_t targetCBlockSize;/* Approximative size of compressed blocks */
     int nbWorkers;          /* multithreading */
     unsigned realTime;      /* real time priority */

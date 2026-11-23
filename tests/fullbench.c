@@ -21,8 +21,8 @@
 #include <assert.h>
 
 #include "mem.h"         /* U32 */
-#include "compress/zstd_compress_internal.h"
 #ifndef ZSTD_DLL_IMPORT
+    #include "compress/zstd_compress_internal.h"
     #include "zstd_internal.h"   /* ZSTD_decodeSeqHeaders, ZSTD_blockHeaderSize, ZSTD_getcBlockSize, blockType_e, KB, MB */
     #include "decompress/zstd_decompress_internal.h"   /* ZSTD_DCtx struct */
 #else
@@ -628,6 +628,7 @@ local_compressSequencesAndLiterals(const void* input, size_t inputSize,
     return ZSTD_compressSequencesAndLiterals(g_zcc, dst, dstCapacity, seqs, nbSeqs, literals, nbLiterals, nbLiterals + 8, decompressedSize);
 }
 
+#ifndef ZSTD_DLL_IMPORT
 static PrepResult prepConvertSequences(const void* src, size_t srcSize, int cLevel)
 {
     PrepResult r = PREPRESULT_INIT;
@@ -686,6 +687,7 @@ local_convertSequences(const void* input, size_t inputSize,
     (void)ZSTD_convertBlockSequences(g_zcc, seqs, nbSeqs, 0);
     return nbSeqs;
 }
+#endif
 
 static size_t
 check_compressedSequences(const void* compressed, size_t cSize, const void* orig, size_t origSize)
@@ -705,6 +707,7 @@ check_compressedSequences(const void* compressed, size_t cSize, const void* orig
     return 0;
 }
 
+#ifndef ZSTD_DLL_IMPORT
 static size_t
 local_get1BlockSummary(const void* input, size_t inputSize,
                        void* dst, size_t dstCapacity,
@@ -724,6 +727,7 @@ local_get1BlockSummary(const void* input, size_t inputSize,
     (void)ZSTD_get1BlockSummary(seqs, nbSeqs);
     return nbSeqs;
 }
+#endif
 
 static PrepResult prepCopy(const void* src, size_t srcSize, int cLevel)
 {
@@ -783,9 +787,9 @@ static BenchScenario kScenarios[] = {
     { "compressStream2, -T2, end", NULL, local_ZSTD_compress_generic_T2_end, check_compressedSequences },
     { "compressSequences", prepSequences, local_compressSequences, check_compressedSequences },
     { "compressSequencesAndLiterals", prepSequencesAndLiterals, local_compressSequencesAndLiterals, check_compressedSequences },
+#ifndef ZSTD_DLL_IMPORT
     { "convertSequences (1st block)", prepConvertSequences, local_convertSequences, NULL },
     { "get1BlockSummary (1st block)", prepConvertSequences, local_get1BlockSummary, NULL },
-#ifndef ZSTD_DLL_IMPORT
     { "decodeLiteralsHeader (1st block)", prepLiterals, local_ZSTD_decodeLiteralsHeader, NULL },
     { "decodeLiteralsBlock (1st block)", prepLiterals, local_ZSTD_decodeLiteralsBlock, NULL },
     { "decodeSeqHeaders (1st block)", prepSequences1stBlock, local_ZSTD_decodeSeqHeaders, NULL },
@@ -890,6 +894,7 @@ static int benchMem(unsigned scenarioID,
             if (!BMK_isSuccessful_runOutcome(bOutcome)) {
                 DISPLAY("ERROR: Scenario %u: %s \n", scenarioID, ZSTD_getErrorName(BMK_extract_errorResult(bOutcome)));
                 errorcode = 1;
+                BMK_freeTimedFnState(tfs);
                 goto _cleanOut;
             }
 

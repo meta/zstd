@@ -132,6 +132,9 @@ static inline istream_t IO_make_sub_istream(istream_t *const in, size_t len);
 /*** END IO STREAM OPERATIONS *********/
 
 /*** BITSTREAM OPERATIONS *************/
+/// Validate a backward bitstream's final 1-bit and return its initial bit offset.
+static inline i64 STREAM_init(const u8 *src, size_t len);
+
 /// Read `num` bits (up to 64) from `src + offset`, where `offset` is in bits,
 /// and return them interpreted as a little-endian unsigned integer.
 static inline u64 read_bits_LE(const u8 *src, const int num_bits,
@@ -988,8 +991,8 @@ static const u8 SEQ_MATCH_LENGTH_EXTRA_BITS[53] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  1,  1,  1, 1,
     2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
-/// Offset decoding is simpler so we just need a maximum code value
-static const u8 SEQ_MAX_CODES[3] = {35, (u8)-1, 52};
+/// This decoder supports 32-bit Offset_Values, so offset codes stop at 31.
+static const u8 SEQ_MAX_CODES[3] = {35, 31, 52};
 
 static void decompress_sequences(frame_context_t *const ctx,
                                  istream_t *const in,
@@ -1100,9 +1103,8 @@ static void decompress_sequences(frame_context_t *const ctx, istream_t *in,
 
     // "After writing the last bit containing information, the compressor writes
     // a single 1-bit and then fills the byte with 0-7 0 bits of padding."
-    const int padding = 8 - highest_set_bit(src[len - 1]);
     // The offset starts at the end because FSE streams are read backwards
-    i64 bit_offset = (i64)(len * 8 - (size_t)padding);
+    i64 bit_offset = STREAM_init(src, len);
 
     // "The bitstream starts with initial state values, each using the required
     // number of bits in their respective accuracy, decoded previously from
@@ -1138,8 +1140,9 @@ static sequence_command_t decode_sequence(sequence_states_t *const states,
     const u8 ll_code = FSE_peek_symbol(&states->ll_table, states->ll_state);
     const u8 ml_code = FSE_peek_symbol(&states->ml_table, states->ml_state);
 
-    // Offset doesn't need a max value as it's not decoded using a table
+    // Validate the codes before indexing the length tables or shifting.
     if (ll_code > SEQ_MAX_CODES[seq_literal_length] ||
+        of_code > SEQ_MAX_CODES[seq_offset] ||
         ml_code > SEQ_MAX_CODES[seq_match_length]) {
         CORRUPTION();
     }
@@ -1309,6 +1312,10 @@ static size_t compute_offset(sequence_command_t seq, u64 *const offset_hist) {
         } else {
             // If idx == 3 then literal length was 0 and the offset was 3,
             // as per the exception listed above
+            if (idx == 3 && offset_hist[0] == 1) {
+                // "If Repeated_Offset1 - 1 evaluates to 0, the data is corrupted."
+                CORRUPTION();
+            }
             offset = idx < 3 ? offset_hist[idx] : offset_hist[0] - 1;
 
             // If idx == 1 we don't need to modify offset_hist[2], since
@@ -1460,8 +1467,7 @@ void parse_dictionary(dictionary_t *const dict, const void *src,
     // FSE table for offsets, FSE table for match lengths, and FSE table for
     // literals lengths. It's finally followed by 3 offset values, populating
     // recent offsets (instead of using {1,4,8}), stored in order, 4-bytes
-    // little-endian each, for a total of 12 bytes. Each recent offset must have
-    // a value < dictionary size."
+    // little-endian each, for a total of 12 bytes."
     decode_huf_table(&dict->literals_dtable, &in);
     decode_seq_table(&dict->of_dtable, &in, seq_offset, seq_fse);
     decode_seq_table(&dict->ml_dtable, &in, seq_match_length, seq_fse);
@@ -1472,10 +1478,11 @@ void parse_dictionary(dictionary_t *const dict, const void *src,
     dict->previous_offsets[1] = IO_read_bits(&in, 32);
     dict->previous_offsets[2] = IO_read_bits(&in, 32);
 
-    // Ensure the provided offsets aren't too large
-    // "Each recent offset must have a value < dictionary size."
+    // "Each recent offset must have a value <= dictionary content size,
+    // and cannot equal 0."
     for (int i = 0; i < 3; i++) {
-        if (dict->previous_offsets[i] > src_len) {
+        if (dict->previous_offsets[i] == 0 ||
+            dict->previous_offsets[i] > IO_istream_len(&in)) {
             ERROR("Dictionary corrupted");
         }
     }
@@ -1725,6 +1732,15 @@ static inline istream_t IO_make_sub_istream(istream_t *const in, size_t len) {
 /******* END IO STREAM OPERATIONS *********************************************/
 
 /******* BITSTREAM OPERATIONS *************************************************/
+/// The highest set bit of the last byte is the end marker, not stream data.
+static inline i64 STREAM_init(const u8 *const src, const size_t len) {
+    if (len == 0 || src[len - 1] == 0) {
+        CORRUPTION();
+    }
+    const int padding = 8 - highest_set_bit(src[len - 1]);
+    return (i64)len * 8 - padding;
+}
+
 /// Read `num` bits (up to 64) from `src + offset`, where `offset` is in bits
 static inline u64 read_bits_LE(const u8 *src, const int num_bits,
                                const size_t offset) {
@@ -1758,22 +1774,16 @@ static inline u64 read_bits_LE(const u8 *src, const int num_bits,
 /// bottom are filled in with `0` bits instead of reading from before `src`.
 static inline u64 STREAM_read_bits(const u8 *const src, const int bits,
                                    i64 *const offset) {
-    *offset = *offset - bits;
-    size_t actual_off = *offset;
-    size_t actual_bits = bits;
-    // Don't actually read bits from before the start of src, so if `*offset <
-    // 0` fix actual_off and actual_bits to reflect the quantity to read
-    if (*offset < 0) {
-        actual_bits += *offset;
-        actual_off = 0;
+    const i64 available = *offset;
+    *offset -= bits;
+    if (available <= 0) {
+        return 0;  // The entire read is before the start of the stream.
     }
-    u64 res = read_bits_LE(src, actual_bits, actual_off);
-
-    if (*offset < 0) {
-        // Fill in the bottom "overflowed" bits with 0's
-        res = -*offset >= 64 ? 0 : (res << -*offset);
+    if (available < bits) {
+        // Read the remaining bits, then pad the missing low bits with zeroes.
+        return read_bits_LE(src, (int)available, 0) << (bits - (int)available);
     }
-    return res;
+    return read_bits_LE(src, bits, (size_t)*offset);
 }
 /******* END BITSTREAM OPERATIONS *********************************************/
 
@@ -1818,9 +1828,6 @@ static size_t HUF_decompress_1stream(const HUF_dtable *const dtable,
                                      ostream_t *const out,
                                      istream_t *const in) {
     const size_t len = IO_istream_len(in);
-    if (len == 0) {
-        INP_SIZE();
-    }
     const u8 *const src = IO_get_read_ptr(in, len);
 
     // "Each bitstream must be read backward, that is starting from the end down
@@ -1832,10 +1839,8 @@ static size_t HUF_decompress_1stream(const HUF_dtable *const dtable,
     // final-bit-flag. Consequently, a last byte of 0 is not possible. And the
     // final-bit-flag itself is not part of the useful bitstream. Hence, the
     // last byte contains between 0 and 7 useful bits."
-    const int padding = 8 - highest_set_bit(src[len - 1]);
-
     // Offset starts at the end because HUF streams are read backwards
-    i64 bit_offset = len * 8 - padding;
+    i64 bit_offset = STREAM_init(src, len);
     u16 state;
 
     HUF_init_state(dtable, &state, src, &bit_offset);
@@ -2049,9 +2054,6 @@ static size_t FSE_decompress_interleaved2(const FSE_dtable *const dtable,
                                           ostream_t *const out,
                                           istream_t *const in) {
     const size_t len = IO_istream_len(in);
-    if (len == 0) {
-        INP_SIZE();
-    }
     const u8 *const src = IO_get_read_ptr(in, len);
 
     // "Each bitstream must be read backward, that is starting from the end down
@@ -2063,8 +2065,7 @@ static size_t FSE_decompress_interleaved2(const FSE_dtable *const dtable,
     // final-bit-flag. Consequently, a last byte of 0 is not possible. And the
     // final-bit-flag itself is not part of the useful bitstream. Hence, the
     // last byte contains between 0 and 7 useful bits."
-    const int padding = 8 - highest_set_bit(src[len - 1]);
-    i64 offset = len * 8 - padding;
+    i64 offset = STREAM_init(src, len);
 
     u16 state1, state2;
     // "The first state (State1) encodes the even indexed symbols, and the

@@ -28,18 +28,20 @@
 UTIL_time_t UTIL_getTime(void)
 {
     static LARGE_INTEGER ticksPerSecond;
+    static double nsFactor = 1.0;
     static int init = 0;
     if (!init) {
         if (!QueryPerformanceFrequency(&ticksPerSecond)) {
             perror("timefn::QueryPerformanceFrequency");
             abort();
         }
+        nsFactor = 1000000000.0 / (double)ticksPerSecond.QuadPart;
         init = 1;
     }
     {   UTIL_time_t r;
         LARGE_INTEGER x;
         QueryPerformanceCounter(&x);
-        r.t = (PTime)(x.QuadPart * 1000000000ULL / ticksPerSecond.QuadPart);
+        r.t = (PTime)((double)x.QuadPart * nsFactor);
         return r;
     }
 }

@@ -208,7 +208,7 @@ BMK_advancedParams_t BMK_initAdvancedParams(void)
     BMK_advancedParams_t const res = {
         BMK_both,               /* mode */
         BMK_TIMETEST_DEFAULT_S, /* nbSeconds */
-        0,                      /* blockSize */
+        0,                      /* chunkSizeMax */
         0,               /* targetCBlockSize */
         0,                      /* nbWorkers */
         0,                      /* realTime */
@@ -227,16 +227,6 @@ BMK_advancedParams_t BMK_initAdvancedParams(void)
 /* ********************************************************
  *  Bench functions
  **********************************************************/
-typedef struct {
-    const void* srcPtr;
-    size_t srcSize;
-    void* cPtr;
-    size_t cRoom;
-    size_t cSize;
-    void* resPtr;
-    size_t resSize;
-} blockParam_t;
-
 #undef MIN
 #undef MAX
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -435,16 +425,16 @@ static BMK_benchOutcome_t BMK_benchMemAdvancedNoAlloc(
         const char* displayName,
         const BMK_advancedParams_t* adv)
 {
-    size_t const blockSize =
-            ((adv->blockSize >= 32 && (adv->mode != BMK_decodeOnly))
-                     ? adv->blockSize
+    size_t const chunkSizeMax =
+            ((adv->chunkSizeMax >= 32 && (adv->mode != BMK_decodeOnly))
+                     ? adv->chunkSizeMax
                      : srcSize)
             + (!srcSize); /* avoid div by 0 */
     BMK_benchResult_t benchResult;
     size_t const loadedCompressedSize = srcSize;
     size_t cSize                      = 0;
     double ratio                      = 0.;
-    U32 nbBlocks;
+    U32 nbChunks = 0;
 
     assert(cctx != NULL);
     assert(dctx != NULL);
@@ -474,20 +464,24 @@ static BMK_benchOutcome_t BMK_benchMemAdvancedNoAlloc(
                         BMK_benchOutcome_t,
                         "Error while trying to assess decompressed size: data may be invalid");
             }
-            totalDSize64 += fSize64;
-            srcPtr += fileSizes[fileNb];
-        }
-        {
-            size_t const decodedSize = (size_t)totalDSize64;
-            assert((U64)decodedSize == totalDSize64); /* check overflow */
-            free(*resultBufferPtr);
-            if (totalDSize64 > decodedSize) { /* size_t overflow */
+            /* Check before adding, including narrowing to size_t. */
+            if (fSize64 > (U64)((size_t)-1) - totalDSize64) {
                 RETURN_ERROR(
                         32,
                         BMK_benchOutcome_t,
                         "decompressed size is too large for local system");
             }
-            *resultBufferPtr = malloc(decodedSize);
+            /* Decode-only mode uses exactly one result chunk per file. */
+            resSizes[fileNb] = (size_t)fSize64;
+            totalDSize64 += fSize64;
+            srcPtr += fileSizes[fileNb];
+        }
+        {
+            size_t const decodedSize = (size_t)totalDSize64;
+            assert((U64)decodedSize == totalDSize64); /* checked before summing */
+            free(*resultBufferPtr);
+            /* Keep a valid allocation even when all files decode to zero. */
+            *resultBufferPtr = malloc(decodedSize ? decodedSize : 1);
             if (!(*resultBufferPtr)) {
                 RETURN_ERROR(
                         33,
@@ -500,41 +494,44 @@ static BMK_benchOutcome_t BMK_benchMemAdvancedNoAlloc(
         }
     }
 
-    /* Init data blocks  */
+    /* Init data chunks  */
     {
         const char* srcPtr = (const char*)srcBuffer;
         char* cPtr         = (char*)compressedBuffer;
         char* resPtr       = (char*)(*resultBufferPtr);
-        U32 fileNb;
-        for (nbBlocks = 0, fileNb = 0; fileNb < nbFiles; fileNb++) {
+        U32 fileNb, chunkID;
+        for (chunkID = 0, fileNb = 0; fileNb < nbFiles; fileNb++) {
             size_t remaining              = fileSizes[fileNb];
-            U32 const nbBlocksforThisFile = (adv->mode == BMK_decodeOnly)
+            U32 const nbChunksforThisFile = (adv->mode == BMK_decodeOnly)
                     ? 1
-                    : (U32)((remaining + (blockSize - 1)) / blockSize);
-            U32 const blockEnd            = nbBlocks + nbBlocksforThisFile;
-            for (; nbBlocks < blockEnd; nbBlocks++) {
-                size_t const thisBlockSize = MIN(remaining, blockSize);
-                srcPtrs[nbBlocks]          = srcPtr;
-                srcSizes[nbBlocks]         = thisBlockSize;
-                cPtrs[nbBlocks]            = cPtr;
-                cCapacities[nbBlocks]      = (adv->mode == BMK_decodeOnly)
-                             ? thisBlockSize
-                             : ZSTD_compressBound(thisBlockSize);
-                resPtrs[nbBlocks]          = resPtr;
-                resSizes[nbBlocks]         = (adv->mode == BMK_decodeOnly)
-                                ? (size_t)ZSTD_findDecompressedSize(
-                                srcPtr, thisBlockSize)
-                                : thisBlockSize;
-                srcPtr += thisBlockSize;
-                cPtr += cCapacities[nbBlocks];
-                resPtr += thisBlockSize;
-                remaining -= thisBlockSize;
+                    : (U32)((remaining + (chunkSizeMax - 1)) / chunkSizeMax);
+            U32 const chunkIdEnd       = chunkID + nbChunksforThisFile;
+            for (; chunkID < chunkIdEnd; chunkID++) {
+                size_t const chunkSize = MIN(remaining, chunkSizeMax);
+                srcPtrs[chunkID]       = srcPtr;
+                srcSizes[chunkID]      = chunkSize;
+                cPtrs[chunkID]         = cPtr;
+                cCapacities[chunkID]   = (adv->mode == BMK_decodeOnly)
+                             ? chunkSize
+                             : ZSTD_compressBound(chunkSize);
+                resPtrs[chunkID]       = resPtr;
                 if (adv->mode == BMK_decodeOnly) {
-                    cSizes[nbBlocks]  = thisBlockSize;
-                    benchResult.cSize = thisBlockSize;
+                    /* Reuse the validated per-file size from the first pass. */
+                    assert(chunkID == fileNb);
+                } else {
+                    resSizes[chunkID] = chunkSize;
+                }
+                srcPtr += chunkSize;
+                cPtr += cCapacities[chunkID];
+                resPtr += resSizes[chunkID];
+                remaining -= chunkSize;
+                if (adv->mode == BMK_decodeOnly) {
+                    cSizes[chunkID]  = chunkSize;
+                    benchResult.cSize = chunkSize;
                 }
             }
         }
+        nbChunks = chunkID;
     }
 
     /* warming up `compressedBuffer` */
@@ -569,7 +566,7 @@ static BMK_benchOutcome_t BMK_benchMemAdvancedNoAlloc(
         cbp.initFn        = local_initCCtx; /* BMK_initCCtx */
         cbp.initPayload   = &cctxprep;
         cbp.errorFn       = ZSTD_isError;
-        cbp.blockCount    = nbBlocks;
+        cbp.blockCount    = nbChunks;
         cbp.srcBuffers    = srcPtrs;
         cbp.srcSizes      = srcSizes;
         cbp.dstBuffers    = cPtrs;
@@ -588,7 +585,7 @@ static BMK_benchOutcome_t BMK_benchMemAdvancedNoAlloc(
         dbp.initFn        = local_initDCtx;
         dbp.initPayload   = &dctxprep;
         dbp.errorFn       = ZSTD_isError;
-        dbp.blockCount    = nbBlocks;
+        dbp.blockCount    = nbChunks;
         dbp.srcBuffers    = (const void* const*)cPtrs;
         dbp.srcSizes      = cSizes;
         dbp.dstBuffers    = resPtrs;
@@ -690,8 +687,7 @@ static BMK_benchOutcome_t BMK_benchMemAdvancedNoAlloc(
         } /* while (!(compressionCompleted && decompressionCompleted)) */
 
         /* CRC Checking */
-        {
-            const BYTE* resultBuffer = (const BYTE*)(*resultBufferPtr);
+        {   const BYTE* resultBuffer = (const BYTE*)(*resultBufferPtr);
             U64 const crcCheck       = XXH64(resultBuffer, srcSize, 0);
             if ((adv->mode == BMK_both) && (crcOrig != crcCheck)) {
                 size_t u;
@@ -704,14 +700,14 @@ static BMK_benchOutcome_t BMK_benchMemAdvancedNoAlloc(
                         unsigned segNb, bNb, pos;
                         size_t bacc = 0;
                         DISPLAY("Decoding error at pos %u ", (unsigned)u);
-                        for (segNb = 0; segNb < nbBlocks; segNb++) {
+                        for (segNb = 0; segNb < nbChunks; segNb++) {
                             if (bacc + srcSizes[segNb] > u)
                                 break;
                             bacc += srcSizes[segNb];
                         }
                         pos = (U32)(u - bacc);
                         bNb = pos / (128 KB);
-                        DISPLAY("(sample %u, block %u, pos %u) \n",
+                        DISPLAY("(sample %u, chunk %u, pos %u) \n",
                                 segNb,
                                 bNb,
                                 pos);
@@ -795,25 +791,24 @@ BMK_benchOutcome_t BMK_benchMemAdvanced(
     int const dstParamsError =
             !dstBuffer ^ !dstCapacity; /* must be both NULL or none */
 
-    size_t const blockSize =
-            ((adv->blockSize >= 32 && (adv->mode != BMK_decodeOnly))
-                     ? adv->blockSize
+    size_t const chunkSize =
+            ((adv->chunkSizeMax >= 32 && (adv->mode != BMK_decodeOnly))
+                     ? adv->chunkSizeMax
                      : srcSize)
             + (!srcSize) /* avoid div by 0 */;
-    U32 const maxNbBlocks =
-            (U32)((srcSize + (blockSize - 1)) / blockSize) + nbFiles;
+    U32 const nbChunksMax =
+            (U32)((srcSize + (chunkSize - 1)) / chunkSize) + nbFiles;
 
-    /* these are the blockTable parameters, just split up */
     const void** const srcPtrs =
-            (const void**)malloc(maxNbBlocks * sizeof(void*));
-    size_t* const srcSizes = (size_t*)malloc(maxNbBlocks * sizeof(size_t));
+            (const void**)malloc(nbChunksMax * sizeof(void*));
+    size_t* const srcSizes = (size_t*)malloc(nbChunksMax * sizeof(size_t));
 
-    void** const cPtrs        = (void**)malloc(maxNbBlocks * sizeof(void*));
-    size_t* const cSizes      = (size_t*)malloc(maxNbBlocks * sizeof(size_t));
-    size_t* const cCapacities = (size_t*)malloc(maxNbBlocks * sizeof(size_t));
+    void** const cPtrs        = (void**)malloc(nbChunksMax * sizeof(void*));
+    size_t* const cSizes      = (size_t*)malloc(nbChunksMax * sizeof(size_t));
+    size_t* const cCapacities = (size_t*)malloc(nbChunksMax * sizeof(size_t));
 
-    void** const resPtrs   = (void**)malloc(maxNbBlocks * sizeof(void*));
-    size_t* const resSizes = (size_t*)malloc(maxNbBlocks * sizeof(size_t));
+    void** const resPtrs   = (void**)malloc(nbChunksMax * sizeof(void*));
+    size_t* const resSizes = (size_t*)malloc(nbChunksMax * sizeof(size_t));
 
     BMK_timedFnState_t* timeStateCompress = BMK_createTimedFnState(
             adv->nbSeconds * 1000, BMK_RUNTEST_DEFAULT_MS);
@@ -825,7 +820,7 @@ BMK_benchOutcome_t BMK_benchMemAdvanced(
 
     const size_t maxCompressedSize = dstCapacity
             ? dstCapacity
-            : ZSTD_compressBound(srcSize) + (maxNbBlocks * 1024);
+            : ZSTD_compressBound(srcSize) + (nbChunksMax * 1024);
 
     void* const internalDstBuffer =
             dstBuffer ? NULL : malloc(maxCompressedSize);
@@ -964,12 +959,12 @@ static int BMK_benchCLevels(
     }
 
     if (displayLevel == 1 && !adv->additionalParam) /* --quiet mode */
-        OUTPUT("bench %s %s: input %u bytes, %u seconds, %u KB blocks\n",
+        OUTPUT("bench %s %s: input %u bytes, %u seconds, %u KB chunks\n",
                ZSTD_VERSION_STRING,
                ZSTD_GIT_COMMIT_STRING,
                (unsigned)benchedSize,
                adv->nbSeconds,
-               (unsigned)(adv->blockSize >> 10));
+               (unsigned)(adv->chunkSizeMax >> 10));
 
     for (level = startCLevel; level <= endCLevel; level++) {
         BMK_benchOutcome_t res = BMK_benchMemAdvanced(
@@ -1000,7 +995,7 @@ int BMK_syntheticTest(
 {
     char nameBuff[20]        = { 0 };
     const char* name         = nameBuff;
-    size_t const benchedSize = adv->blockSize ? adv->blockSize : 10000000;
+    size_t const benchedSize = adv->chunkSizeMax ? adv->chunkSizeMax : 10000000;
 
     /* Memory allocation */
     void* const srcBuffer = malloc(benchedSize);

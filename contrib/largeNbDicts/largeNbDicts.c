@@ -45,7 +45,9 @@
 #define RUN_TIME_DEFAULT_MS    1000
 #define BENCH_TIME_DEFAULT_MS (BENCH_TIME_DEFAULT_S * RUN_TIME_DEFAULT_MS)
 
-#define DISPLAY_LEVEL_DEFAULT 3
+#ifndef ZSTD_DISPLAY_LEVEL_DEFAULT
+# define ZSTD_DISPLAY_LEVEL_DEFAULT 3
+#endif
 
 #define BENCH_SIZE_MAX (1200 MB)
 
@@ -61,7 +63,7 @@
 
 #define DISPLAY(...)         fprintf(stdout, __VA_ARGS__)
 #define DISPLAYLEVEL(l, ...) { if (g_displayLevel>=l) { DISPLAY(__VA_ARGS__); } }
-static int g_displayLevel = DISPLAY_LEVEL_DEFAULT;   /* 0 : no display,  1: errors,  2 : + result + interaction + warnings,  3 : + progression,  4 : + information */
+static int g_displayLevel = ZSTD_DISPLAY_LEVEL_DEFAULT;   /* 0 : no display,  1: errors,  2 : + result + interaction + warnings,  3 : + progression,  4 : + information */
 
 
 /*---  buffer_t  ---*/
@@ -739,6 +741,8 @@ static int benchMem(slice_collection_t dstBlocks, slice_collection_t srcBlocks,
     /* BMK_benchTimedFn may not run exactly nbRounds iterations */
     double speedAggregated =
         aggregateData(speedPerRound, roundNb + 1, metricAggregatePref);
+    free(speedPerRound);
+    
     if (metricAggregatePref == fastest)
       DISPLAY("Fastest Speed : %.1f MB/s \n", speedAggregated);
     else

@@ -37,7 +37,7 @@ typedef struct FIO_prefs_s {
     int sparseFileSupport;   /* 0: no sparse allowed; 1: auto (file yes, stdout no); 2: force sparse */
     int dictIDFlag;
     int checksumFlag;
-    int blockSize;
+    int jobSize;
     int overlapLog;
     int adaptiveMode;
     int useRowMatchFinder;

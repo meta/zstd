@@ -170,7 +170,7 @@ endif
 
 zstd : $(BUILD_DIR)/zstd
 	if [ $(BIN_ISDIFFERENT) -eq 1 ]; then \
-		cp -f $<$(EXT) $@$(EXT); \
+		$(CP) $<$(EXT) $@$(EXT); \
 		echo zstd build completed; \
 	else \
 		echo zstd already built; \
@@ -186,6 +186,7 @@ zstd-release: DEBUGFLAGS_LD :=
 zstd-release: zstd
 
 CLEAN += zstd32
+zstd32 : LDFLAGS := $(LDFLAGS_32)
 zstd32 : CPPFLAGS += $(THREAD_CPP)
 zstd32 : LDFLAGS  += $(THREAD_LD)
 zstd32 : CPPFLAGS += -DZSTD_LEGACY_SUPPORT=$(ZSTD_LEGACY_SUPPORT)
@@ -271,7 +272,7 @@ zstd-dictBuilder: $(ZSTDLIB_COMMON_SRC) $(ZSTDLIB_COMPRESS_SRC) $(ZDICT_SRC) zst
 
 CLEAN += zstdmt
 zstdmt: zstd
-	ln -sf zstd zstdmt
+	$(LN) -sf zstd zstdmt
 
 .PHONY: generate_res
 generate_res: $(RES64_FILE) $(RES32_FILE)
@@ -345,7 +346,7 @@ include $(wildcard $(DEPFILES))
 #-----------------------------------------------------------------------------
 # make install is validated only for Linux, macOS, BSD, Hurd and Solaris targets
 #-----------------------------------------------------------------------------
-ifneq (,$(filter Linux Darwin GNU/kFreeBSD GNU OpenBSD FreeBSD NetBSD DragonFly SunOS Haiku AIX MSYS_NT% CYGWIN_NT%,$(UNAME)))
+ifneq (,$(filter $(INSTALL_OS_LIST),$(UNAME)))
 
 HAVE_COLORNEVER = $(shell echo a | egrep --color=never a > /dev/null 2> /dev/null && echo 1 || echo 0)
 EGREP_OPTIONS ?=
@@ -414,15 +415,15 @@ install:
 	[ -e $(DESTDIR)$(MAN1DIR) ] || $(INSTALL) -d -m 755 $(DESTDIR)$(MAN1DIR)/
 	@echo Installing binaries
 	$(INSTALL_PROGRAM) zstd$(EXT) $(DESTDIR)$(BINDIR)/zstd$(EXT)
-	ln -sf zstd$(EXT) $(DESTDIR)$(BINDIR)/zstdcat$(EXT)
-	ln -sf zstd$(EXT) $(DESTDIR)$(BINDIR)/unzstd$(EXT)
-	ln -sf zstd$(EXT) $(DESTDIR)$(BINDIR)/zstdmt$(EXT)
+	$(LN) -sf zstd$(EXT) $(DESTDIR)$(BINDIR)/zstdcat$(EXT)
+	$(LN) -sf zstd$(EXT) $(DESTDIR)$(BINDIR)/unzstd$(EXT)
+	$(LN) -sf zstd$(EXT) $(DESTDIR)$(BINDIR)/zstdmt$(EXT)
 	$(INSTALL_SCRIPT) zstdless $(DESTDIR)$(BINDIR)/zstdless
 	$(INSTALL_SCRIPT) zstdgrep $(DESTDIR)$(BINDIR)/zstdgrep
 	@echo Installing man pages
 	$(INSTALL_MAN) zstd.1 $(DESTDIR)$(MAN1DIR)/zstd.1
-	ln -sf zstd.1 $(DESTDIR)$(MAN1DIR)/zstdcat.1
-	ln -sf zstd.1 $(DESTDIR)$(MAN1DIR)/unzstd.1
+	$(LN) -sf zstd.1 $(DESTDIR)$(MAN1DIR)/zstdcat.1
+	$(LN) -sf zstd.1 $(DESTDIR)$(MAN1DIR)/unzstd.1
 	$(INSTALL_MAN) zstdgrep.1 $(DESTDIR)$(MAN1DIR)/zstdgrep.1
 	$(INSTALL_MAN) zstdless.1 $(DESTDIR)$(MAN1DIR)/zstdless.1
 	@echo zstd installation completed
