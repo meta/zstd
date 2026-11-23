@@ -3,6 +3,10 @@ name: windows-artifacts
 on:
   push:
     branches: [ test_artifacts, win_artifacts, release ]
+  pull_request:
+    paths:
+      - 'lib/dll/example/**'
+      - '.github/workflows/windows-artifacts.yml'
   release:
     types:
       - published
@@ -107,6 +111,13 @@ jobs:
           .\lib\dll\example\build_package.bat
           if ($LASTEXITCODE -ne 0) { exit 1 }
           mv bin/ zstd-${{ github.ref_name }}-${{matrix.ziparch}}/
+
+      - name: Check packaged DLL import library (CMake)
+        if: matrix.shell == 'cmake'
+        run: |
+          if (-not (Test-Path "zstd-${{ github.ref_name }}-${{ matrix.ziparch }}/dll/libzstd.lib")) {
+            throw "Missing dll/libzstd.lib in packaged artifact"
+          }
 
       - name: Publish zstd-$VERSION-${{matrix.ziparch}}.zip for manual inspection
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
