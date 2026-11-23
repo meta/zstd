@@ -72,6 +72,21 @@ jobs:
       run: |
         nm cmake-build/lib/libzstd.a | grep -q HUF_decompress4X1_usingDTable_internal_fast_asm_loop
 
+  # Verify the shared library built by CMake exports the same symbols as the one
+  # built by make
+  cmake-make-exports:
+    name: "CMake and make export the same symbols"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: Compare exported symbols
+      run: |
+        make -C lib -j "$(nproc)" libzstd
+        cmake -S build/cmake -B cmake-build -DCMAKE_BUILD_TYPE=Release
+        cmake --build cmake-build --parallel
+        diff <(nm -D --defined-only lib/libzstd.so | awk '{print $3}' | sort) \
+             <(nm -D --defined-only cmake-build/lib/libzstd.so | awk '{print $3}' | sort)
+
   cmake-ccache:
     name: "CMake ccache"
     runs-on: ubuntu-latest
