@@ -6,6 +6,8 @@ api: experimental `ZSTD_d_refMultipleDDicts` now requires an exact match for non
 api: set-based multi-DDict decoding no longer remembers a selected dictionary; legacy frames require single-dictionary or explicit-dictionary decoding
 api: disabling experimental `ZSTD_d_refMultipleDDicts` releases every dictionary reference in its set; no selected dictionary is retained for subsequent decompression
 api: removed the deprecated experimental functions `ZSTD_copyCCtx()` and `ZSTD_copyDCtx()`
+api: promoted `ZSTD_getFrameHeader()` and `ZSTD_FrameHeader` to the stable API (#2471)
+api: promoted `ZSTD_createDDict_byReference()`, `ZSTD_DCtx_loadDictionary_advanced()`, and `ZSTD_CCtx_loadDictionary_advanced()` to the stable API, along with `ZSTD_dictContentType_e` and `ZSTD_dictLoadMethod_e` (#4283, #3723)
 build: `ZSTD_LEGACY_SUPPORT` defaults to `0` in Makefile and CMake
 
 V1.5.7 (Feb 2025)
