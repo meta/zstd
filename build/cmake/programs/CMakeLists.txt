@@ -27,10 +27,15 @@ if (MSVC)
     set(PlatformDependResources ${MSVC_RESOURCE_DIR}/zstd.rc)
 endif ()
 
-file(GLOB ZSTD_PROGRAM_SRCS "${PROGRAMS_DIR}/*.c")
-if (MSVC AND ZSTD_PROGRAMS_LINK_SHARED)
-    list(APPEND ZSTD_PROGRAM_SRCS ${LIBRARY_DIR}/common/pool.c ${LIBRARY_DIR}/common/threading.c)
+# The CLI uses the library's internal thread pool, which the shared library
+# does not export. Compile it into the CLI, as programs/Makefile's zstd-dll does.
+set(ZSTD_PROGRAM_SHARED_SRCS)
+if (ZSTD_PROGRAMS_LINK_SHARED)
+    set(ZSTD_PROGRAM_SHARED_SRCS ${LIBRARY_DIR}/common/pool.c ${LIBRARY_DIR}/common/threading.c)
 endif ()
+
+file(GLOB ZSTD_PROGRAM_SRCS "${PROGRAMS_DIR}/*.c")
+list(APPEND ZSTD_PROGRAM_SRCS ${ZSTD_PROGRAM_SHARED_SRCS})
 
 add_executable(zstd ${ZSTD_PROGRAM_SRCS})
 target_link_libraries(zstd ${PROGRAMS_ZSTD_LINK_TARGET})
@@ -77,7 +82,8 @@ if (UNIX)
 
     add_executable(zstd-frugal ${PROGRAMS_DIR}/zstdcli.c
         ${PROGRAMS_DIR}/util.c ${PROGRAMS_DIR}/timefn.c
-        ${PROGRAMS_DIR}/fileio.c ${PROGRAMS_DIR}/fileio_asyncio.c)
+        ${PROGRAMS_DIR}/fileio.c ${PROGRAMS_DIR}/fileio_asyncio.c
+        ${ZSTD_PROGRAM_SHARED_SRCS})
     target_link_libraries(zstd-frugal ${PROGRAMS_ZSTD_LINK_TARGET})
     set_property(TARGET zstd-frugal APPEND PROPERTY COMPILE_DEFINITIONS "ZSTD_NOBENCH;ZSTD_NODICT;ZSTD_NOTRACE")
 endif ()
