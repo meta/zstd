@@ -32,6 +32,11 @@
 
 project(tests)
 
+# Like tests/Makefile, don't require the test sources to be valid C++.
+if (C_FLAG_WCPLUSPLUS_COMPAT)
+    string(APPEND CMAKE_C_FLAGS " -Wno-c++-compat")
+endif ()
+
 # name: Cache variable name. The value is expected to be a semicolon-separated
 # list of command line flags
 # default_value: Value to initialize the option with. Can be space separated.
