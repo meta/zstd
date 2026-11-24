@@ -7600,7 +7600,7 @@ size_t convertSequences_noRepcodes(
 
     if (nbSequences > 3) {
         static const ZSTD_ALIGNED(16) U32 constAddition[4] = {
-            ZSTD_REP_NUM, 0, -MINMATCH, 0
+            ZSTD_REP_NUM, 0, (U32)-MINMATCH, 0
         };
         static const ZSTD_ALIGNED(16) U8 constMask[16] = {
             0, 1, 2, 3, 4, 5, 8, 9, 16, 17, 18, 19, 20, 21, 24, 25
