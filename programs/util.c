@@ -1258,7 +1258,7 @@ static int UTIL_prepareFileList(const char *dirName,
         if (UTIL_isDirectory(path)) {
             nbFiles += UTIL_prepareFileList(path, bufStart, pos, bufEnd, followLinks);  /* Recursively call "UTIL_prepareFileList" with the new path. */
             if (*bufStart == NULL) { free(path); closedir(dir); return 0; }
-        } else {
+        } else if (UTIL_isRegularFile(path)) {
             if (*bufStart + *pos + pathLength >= *bufEnd) {
                 ptrdiff_t newListSize = (*bufEnd - *bufStart) + LIST_SIZE_INCREASE;
                 assert(newListSize >= 0);
@@ -1273,7 +1273,14 @@ static int UTIL_prepareFileList(const char *dirName,
                 memcpy(*bufStart + *pos, path, pathLength + 1);  /* with final \0 */
                 *pos += pathLength + 1;
                 nbFiles++;
-        }   }
+        }   } else {
+            /* A non-regular file (fifo, socket, device, ...) discovered during
+             * recursion is ignored : it holds no stored content to compress,
+             * and opening it for reading could block forever (e.g. a fifo with
+             * no writer). Only files explicitly named on the command line may
+             * be non-regular (e.g. process substitution). */
+            UTIL_DISPLAYLEVEL(2, "Warning : %s is not a regular file, ignoring\n", path);
+        }
         free(path);
         errno = 0; /* clear errno after UTIL_isDirectory, UTIL_prepareFileList */
     }
