@@ -32,6 +32,15 @@ make install PREFIX=/usr LIBDIR=/usr/lib/aarch64-linux-gnu
 
 This will not only install the files in the correct directories, but also generate the correct paths for `pkg-config`.
 
+#### Shared library location
+
+By default, `make install` places the shared library based on the platform:
+
+- On Linux, macOS and BSD: in `LIBDIR` (`$(PREFIX)/lib` by default), next to `libzstd.a`.
+- On Windows (MinGW / MSYS2): in `$(PREFIX)/bin`, next to the executables. The import library `libzstd.dll.a` still goes to `LIBDIR` (`$(PREFIX)/lib` by default).
+
+To choose a different location, set `SHLIBDIR`.
+
 #### Multithreading support
 
 When building with `make`, by default the dynamic library is multithreaded and static library is single-threaded (for compatibility reasons).

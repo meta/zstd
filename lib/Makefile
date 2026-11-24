@@ -134,7 +134,7 @@ endif
 
 ifneq (,$(filter Windows%,$(TARGET_SYSTEM)))
 
-LIBZSTD = dll/libzstd-$(LIBVER_MAJOR).dll
+LIBZSTD = dll/libzstd.dll
 $(LIBZSTD): $(ZSTD_FILES)
 	@echo compiling dynamic library $(LIBVER)
 	$(CC) $(FLAGS) -DZSTD_DLL_EXPORT=1 -Wl,--out-implib,dll/libzstd.dll.a -shared $^ -o $@
@@ -285,7 +285,7 @@ EXEC_PREFIX ?= $(exec_prefix)
 libdir      ?= $(EXEC_PREFIX)/lib
 LIBDIR      ?= $(libdir)
 ifeq (,$(filter Windows%,$(TARGET_SYSTEM)))
-shlibdir    ?= $(libdir)
+shlibdir    ?= $(LIBDIR)
 else
 shlibdir    ?= $(EXEC_PREFIX)/bin
 endif
