@@ -34,6 +34,16 @@ endif ()
 
 add_executable(zstd ${ZSTD_PROGRAM_SRCS})
 target_link_libraries(zstd ${PROGRAMS_ZSTD_LINK_TARGET})
+
+# Enable full RELRO on Linux toolchains that support it.
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ZSTD_HAVE_CHECK_LINKER_FLAG)
+    set(ZSTD_FULL_RELRO_FLAG "-Wl,-z,relro,-z,now")
+    check_linker_flag(C "${ZSTD_FULL_RELRO_FLAG}" ZSTD_CLI_HAS_FULL_RELRO)
+    if (ZSTD_CLI_HAS_FULL_RELRO)
+        target_link_options(zstd PRIVATE "${ZSTD_FULL_RELRO_FLAG}")
+    endif ()
+endif ()
+
 if (CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
     target_link_libraries(zstd rt)
 endif ()
