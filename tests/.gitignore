@@ -52,6 +52,9 @@ versionsTest
 namespaceTest
 dirTest*
 
+# Swift package test
+swift/.build/
+
 # fuzzer
 afl
 
