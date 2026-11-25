@@ -336,8 +336,8 @@ options that intend to mimic the `gzip` behavior:
 ### Environment Variables
 Employing environment variables to set parameters has security implications.
 Therefore, this avenue is intentionally limited.
-Only `ZSTD_CLEVEL` and `ZSTD_NBTHREADS` are currently supported.
-They set the default compression level and number of threads to use during compression, respectively.
+Only `ZSTD_CLEVEL`, `ZSTD_NBTHREADS` and `ZSTD_MEMORY` are currently supported.
+They set the default compression level, the number of threads to use during compression, and the memory limit, respectively.
 
 `ZSTD_CLEVEL` can be used to set the level between 1 and 19 (the "normal" range).
 If the value of `ZSTD_CLEVEL` is not a valid integer, it will be ignored with a warning message.
@@ -349,8 +349,14 @@ If the value of `ZSTD_NBTHREADS` is not a valid unsigned integer, it will be ign
 which is either 64 in 32-bit mode, or 256 for 64-bit environments.
 `zstd` must be compiled with multithread support for this variable to have any effect.
 
-They can both be overridden by corresponding command line arguments:
-`-#` for compression level and `-T#` for number of compression threads.
+`ZSTD_MEMORY` can be used to set the memory limit, with the same syntax as `--memory=#` (for example `ZSTD_MEMORY=2GiB`).
+If the value of `ZSTD_MEMORY` is not a valid size, it will be ignored with a warning message.
+`ZSTD_MEMORY` just replaces the default memory limit of decompression and `--patch-from` (128 MiB), see `--memory=#`.
+It does not change the limit for dictionary training.
+
+They can be overridden by corresponding command line arguments:
+`-#` for compression level, `-T#` for number of compression threads,
+and `-M#`, `--memory=#` or `--long=#` for the memory limit.
 
 
 ADVANCED COMPRESSION OPTIONS

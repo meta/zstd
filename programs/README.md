@@ -268,7 +268,7 @@ Benchmark options:
 ### Passing parameters through Environment Variables
 There is no "generic" way to pass "any kind of parameter" to `zstd` in a pass-through manner.
 Using environment variables for this purpose has security implications.
-Therefore, this avenue is intentionally restricted and only supports `ZSTD_CLEVEL` and `ZSTD_NBTHREADS`.
+Therefore, this avenue is intentionally restricted and only supports `ZSTD_CLEVEL`, `ZSTD_NBTHREADS` and `ZSTD_MEMORY`.
 
 `ZSTD_CLEVEL` can be used to modify the default compression level of `zstd`
 (usually set to `3`) to another value between 1 and 19 (the "normal" range).
@@ -280,11 +280,19 @@ This functionality only exists when `zstd` is compiled with multithread support.
 The max # of threads is capped at `ZSTDMT_NBWORKERS_MAX`,
 which is either 64 in 32-bit mode, or 256 for 64-bit environments.
 
+`ZSTD_MEMORY` can be used to change the default memory limit of `zstd` (`128 MiB`),
+with the same syntax as `--memory=#` (for example `ZSTD_MEMORY=2GiB`).
+It can raise the limit, for example to decompress files compressed with `--long=31`, or lower it.
+This limit applies to decompression, including `.xz` and `.lzma` files,
+and to the dictionary size with `--patch-from`.
+
 This functionality can be useful when `zstd` CLI is invoked in a way that doesn't allow passing arguments.
 One such scenario is `tar --zstd`.
-As `ZSTD_CLEVEL` and `ZSTD_NBTHREADS` only replace the default compression level
-and number of threads respectively, they can both be overridden by corresponding command line arguments:
-`-#` for compression level and `-T#` for number of threads.
+Another one is a tool that decompresses with `zstd`, such as `rg -z`.
+As these variables only replace default values,
+they can be overridden by corresponding command line arguments:
+`-#` for compression level, `-T#` for number of threads,
+and `-M#`, `--memory=#` or `--long=#` for the memory limit.
 
 
 ### Long distance matching mode
