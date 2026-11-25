@@ -1088,6 +1088,33 @@ ZSTD_row_getRVVMask(int rowEntries, const BYTE* const src, const BYTE tag, const
     }
 }
 #endif
+#if defined(ZSTD_ARCH_PPC_VSX)
+FORCE_INLINE_TEMPLATE ZSTD_VecMask
+ZSTD_row_getVSXMask(int nbChunks, const BYTE* const src, const BYTE tag, const U32 head)
+{
+    const __vector unsigned char comparisonMask = vec_splats((unsigned char)tag);
+#if !defined(_ARCH_PWR10)
+    /* vbpermq gathers the selected bits : pick the top bit of each byte */
+    const __vector unsigned char msbSelect = { 120, 112, 104, 96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 16, 8, 0 };
+#endif
+    U32 matches[4] = {0};
+    int i;
+    assert(nbChunks == 1 || nbChunks == 2 || nbChunks == 4);
+    for (i=0; i<nbChunks; i++) {
+        const __vector unsigned char chunk = vec_xl(16*i, src);
+        const __vector unsigned char equalMask = (__vector unsigned char)vec_cmpeq(chunk, comparisonMask);
+#if defined(_ARCH_PWR10)
+        matches[i] = (U32)vec_extractm(equalMask);
+#else
+        matches[i] = (U32)vec_extract((__vector unsigned long long)vec_vbpermq(equalMask, msbSelect), 1);
+#endif
+    }
+    if (nbChunks == 1) return ZSTD_rotateRight_U16((U16)matches[0], head);
+    if (nbChunks == 2) return ZSTD_rotateRight_U32(matches[1] << 16 | matches[0], head);
+    assert(nbChunks == 4);
+    return ZSTD_rotateRight_U64((U64)matches[3] << 48 | (U64)matches[2] << 32 | (U64)matches[1] << 16 | (U64)matches[0], head);
+}
+#endif
 
 /* Returns a ZSTD_VecMask (U64) that has the nth group (determined by
  * ZSTD_row_matchMaskGroupWidth) of bits set to 1 if the newly-computed "tag"
@@ -1110,6 +1137,10 @@ ZSTD_row_getMatchMask(const BYTE* const tagRow, const BYTE tag, const U32 headGr
 #elif defined(ZSTD_ARCH_RISCV_RVV) && (__riscv_xlen == 64)
 
     return ZSTD_row_getRVVMask(rowEntries, src, tag, headGrouped);
+
+#elif defined(ZSTD_ARCH_PPC_VSX)
+
+    return ZSTD_row_getVSXMask(rowEntries / 16, src, tag, headGrouped);
 
 #else
 

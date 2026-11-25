@@ -238,6 +238,10 @@
         #define ZSTD_ARCH_RISCV_RVV
 #  endif
 #endif
+#  if defined(__VSX__) && defined(__POWER8_VECTOR__) \
+      && defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#    define ZSTD_ARCH_PPC_VSX
+#  endif
 #
 #  if defined(ZSTD_ARCH_X86_AVX2)
 #    include <immintrin.h>
@@ -252,6 +256,20 @@
 #  endif
 #  if defined(ZSTD_ARCH_RISCV_RVV)
 #    include <riscv_vector.h>
+#  endif
+#  if defined(ZSTD_ARCH_PPC_VSX)
+     /* <altivec.h> may define `bool`, `vector` and `pixel` as macros:
+      * keep them out of the namespace, and use the `__vector` spelling. */
+#    pragma push_macro("bool")
+#    pragma push_macro("vector")
+#    pragma push_macro("pixel")
+#    undef bool
+#    undef vector
+#    undef pixel
+#    include <altivec.h>
+#    pragma pop_macro("pixel")
+#    pragma pop_macro("vector")
+#    pragma pop_macro("bool")
 #  endif
 #endif
 
