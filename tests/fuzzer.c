@@ -2999,6 +2999,135 @@ static void FUZ_reset_testDirtyStream(unsigned api)
     CHECK_Z(ZSTD_freeDDict(ddict));
 }
 
+/* One-shot compression functions reset the streaming session first: they work
+ * on a CCtx left mid-stream (buffered load, partial flush, stable input buffer,
+ * or multithreaded jobs in flight) and leave it ready to stream a new frame
+ * without any explicit ZSTD_CCtx_reset(). Before the fix, they cleared
+ * cctx->inBuff / outBuff via ZSTDb_not_buffered while leaving streamStage
+ * dirty, so a subsequent ZSTD_compressStream2() dereferenced NULL or hit stale
+ * stableIn_notConsumed / MT state.
+ * `api` selects the one-shot function:
+ * 0: compressCCtx, 1: usingDict, 2: usingCDict, 3: compress_advanced,
+ * 4: usingCDict_advanced. */
+static void FUZ_reset_testDirtyCompressStream(unsigned api)
+{
+    ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+    ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+    BYTE dict[44];
+    ZSTD_CDict* cdict;
+    const char dirtySrc[] = "abandoned-stream-input";
+    const char oneShotSrc[] = "one-shot-payload";
+    const char streamSrc[] = "stream-payload";
+    BYTE cBuf[256], dBuf[256];
+    unsigned dirty;
+    CHECK(cctx != NULL && dctx != NULL);
+    FUZ_mdict_makeDict(dict, 2222, 'B');
+    cdict = ZSTD_createCDict(dict, sizeof(dict), 1);
+    CHECK(cdict != NULL);
+
+    /* Sticky parameter should survive the session-only reset. */
+    CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1));
+
+    for (dirty = 0; dirty < 5; ++dirty) {
+        size_t r;
+        int checksumFlag = 0;
+        ZSTD_inBuffer in = { dirtySrc, sizeof(dirtySrc) - 1, 0 };
+        ZSTD_outBuffer ob = { cBuf, sizeof(cBuf), 0 };
+
+        /* 0: clean CCtx (ensures one-shot pledgedSrcSizePlusOne does not leak)
+         * 1: mid-stream buffered zcss_load
+         * 2: mid-stream zcss_flush (tiny output buffer)
+         * 3: mid-stream stableInBuffer (stableIn_notConsumed > 0)
+         * 4: mid-stream multithreaded (when ZSTD_MULTITHREAD is enabled) */
+        if (dirty == 3) {
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_stableInBuffer, 1));
+        } else if (dirty == 4) {
+            if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, 2)))
+                continue;
+        }
+
+        if (dirty == 2) {
+            ZSTD_outBuffer tinyOb = { cBuf, 1, 0 };
+            r = ZSTD_compressStream2(cctx, &tinyOb, &in, ZSTD_e_flush);
+            CHECK(!ZSTD_isError(r) && r > 0);
+        } else if (dirty != 0) {
+            r = ZSTD_compressStream2(cctx, &ob, &in, ZSTD_e_continue);
+            CHECK(!ZSTD_isError(r));
+        }
+
+        switch (api) {
+        case 1:
+            r = ZSTD_compress_usingDict(cctx, cBuf, sizeof(cBuf),
+                                        oneShotSrc, sizeof(oneShotSrc) - 1,
+                                        dict, sizeof(dict), 1);
+            break;
+        case 2:
+            r = ZSTD_compress_usingCDict(cctx, cBuf, sizeof(cBuf),
+                                         oneShotSrc, sizeof(oneShotSrc) - 1,
+                                         cdict);
+            break;
+        case 3: {
+            ZSTD_parameters const params = ZSTD_getParams(1, sizeof(oneShotSrc) - 1, sizeof(dict));
+            r = ZSTD_compress_advanced(cctx, cBuf, sizeof(cBuf),
+                                       oneShotSrc, sizeof(oneShotSrc) - 1,
+                                       dict, sizeof(dict), params);
+            break;
+        }
+        case 4: {
+            ZSTD_frameParameters const fParams = { 1, 0, 0 };
+            r = ZSTD_compress_usingCDict_advanced(cctx, cBuf, sizeof(cBuf),
+                                                  oneShotSrc, sizeof(oneShotSrc) - 1,
+                                                  cdict, fParams);
+            break;
+        }
+        default:
+            r = ZSTD_compressCCtx(cctx, cBuf, sizeof(cBuf),
+                                  oneShotSrc, sizeof(oneShotSrc) - 1, 1);
+            break;
+        }
+        CHECK_Z(r);
+
+        /* Verify the one-shot frame decompresses cleanly. */
+        if (api == 0) {
+            r = ZSTD_decompressDCtx(dctx, dBuf, sizeof(dBuf), cBuf, r);
+        } else {
+            r = ZSTD_decompress_usingDict(dctx, dBuf, sizeof(dBuf), cBuf, r,
+                                          dict, sizeof(dict));
+        }
+        CHECK_EQ(r, sizeof(oneShotSrc) - 1);
+        CHECK(memcmp(dBuf, oneShotSrc, sizeof(oneShotSrc) - 1) == 0);
+
+        /* Sticky parameters remain intact after session-only reset. */
+        CHECK_Z(ZSTD_CCtx_getParameter(cctx, ZSTD_c_checksumFlag, &checksumFlag));
+        CHECK_EQ(checksumFlag, 1);
+
+        /* Start a fresh streaming frame immediately with no explicit reset. */
+        {
+            ZSTD_inBuffer sin = { streamSrc, 7, 0 };
+            ZSTD_outBuffer sob = { cBuf, sizeof(cBuf), 0 };
+            CHECK_Z(ZSTD_compressStream2(cctx, &sob, &sin, ZSTD_e_continue));
+            sin.size = sizeof(streamSrc) - 1;
+            do {
+                r = ZSTD_compressStream2(cctx, &sob, &sin, ZSTD_e_end);
+                CHECK_Z(r);
+            } while (r != 0);
+            r = ZSTD_decompressDCtx(dctx, dBuf, sizeof(dBuf), cBuf, sob.pos);
+            CHECK_EQ(r, sizeof(streamSrc) - 1);
+            CHECK(memcmp(dBuf, streamSrc, sizeof(streamSrc) - 1) == 0);
+        }
+
+        if (dirty == 3) {
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_stableInBuffer, 0));
+        } else if (dirty == 4) {
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, 0));
+        }
+    }
+
+    CHECK_Z(ZSTD_freeCDict(cdict));
+    CHECK_Z(ZSTD_freeDCtx(dctx));
+    CHECK_Z(ZSTD_freeCCtx(cctx));
+}
+
 static unsigned test_sessionReset(unsigned testNb)
 {
     static const struct { const char* name; void (*run)(unsigned); unsigned nbParams; } tests[] = {
@@ -3007,6 +3136,7 @@ static unsigned test_sessionReset(unsigned testNb)
         {"prefix lifetime: reset and abandoned streams", FUZ_pfx_testReset, 2},
         {"prefix lifetime: replacement", FUZ_pfx_testReplacement, 2},
         {"one-shot decompression resets the streaming session", FUZ_reset_testDirtyStream, 4},
+        {"one-shot compression resets the streaming session", FUZ_reset_testDirtyCompressStream, 5},
     };
     size_t i;
     unsigned param;

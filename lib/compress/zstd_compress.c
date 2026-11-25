@@ -5452,11 +5452,17 @@ size_t ZSTD_compress_advanced_internal(
         const void* dict,size_t dictSize,
         const ZSTD_CCtx_params* params)
 {
+    size_t cSize;
     DEBUGLOG(4, "ZSTD_compress_advanced_internal (srcSize:%u)", (unsigned)srcSize);
-    FORWARD_IF_ERROR( ZSTD_compressBegin_internal(cctx,
+    if (cctx != NULL) ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+    cSize = ZSTD_compressBegin_internal(cctx,
                          dict, dictSize, ZSTD_dct_auto, ZSTD_dtlm_fast, NULL,
-                         params, srcSize, ZSTDb_not_buffered) , "");
-    return ZSTD_compressEnd_public(cctx, dst, dstCapacity, src, srcSize);
+                         params, srcSize, ZSTDb_not_buffered);
+    if (!ZSTD_isError(cSize)) {
+        cSize = ZSTD_compressEnd_public(cctx, dst, dstCapacity, src, srcSize);
+    }
+    if (cctx != NULL) cctx->pledgedSrcSizePlusOne = 0;
+    return cSize;
 }
 
 size_t ZSTD_compress_usingDict(ZSTD_CCtx* cctx,
@@ -5919,8 +5925,14 @@ static size_t ZSTD_compress_usingCDict_internal(ZSTD_CCtx* cctx,
                                 const void* src, size_t srcSize,
                                 const ZSTD_CDict* cdict, ZSTD_frameParameters fParams)
 {
-    FORWARD_IF_ERROR(ZSTD_compressBegin_usingCDict_internal(cctx, cdict, fParams, srcSize), ""); /* will check if cdict != NULL */
-    return ZSTD_compressEnd_public(cctx, dst, dstCapacity, src, srcSize);
+    size_t cSize;
+    if (cctx != NULL) ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+    cSize = ZSTD_compressBegin_usingCDict_internal(cctx, cdict, fParams, srcSize); /* will check if cdict != NULL */
+    if (!ZSTD_isError(cSize)) {
+        cSize = ZSTD_compressEnd_public(cctx, dst, dstCapacity, src, srcSize);
+    }
+    if (cctx != NULL) cctx->pledgedSrcSizePlusOne = 0;
+    return cSize;
 }
 
 /*! ZSTD_compress_usingCDict_advanced():
