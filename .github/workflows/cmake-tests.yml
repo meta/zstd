@@ -82,10 +82,17 @@ jobs:
     - name: Compare exported symbols
       run: |
         make -C lib -j "$(nproc)" libzstd
-        cmake -S build/cmake -B cmake-build -DCMAKE_BUILD_TYPE=Release
+        cmake -S build/cmake -B cmake-build -DCMAKE_BUILD_TYPE=Release -DZSTD_PROGRAMS_LINK_SHARED=ON
         cmake --build cmake-build --parallel
         diff <(nm -D --defined-only lib/libzstd.so | awk '{print $3}' | sort) \
              <(nm -D --defined-only cmake-build/lib/libzstd.so | awk '{print $3}' | sort)
+    - name: Run the CLI linked to the shared library
+      run: |
+        export LD_LIBRARY_PATH="$PWD/cmake-build/lib"
+        ldd cmake-build/programs/zstd | grep -q "$PWD/cmake-build/lib/libzstd.so"
+        ./cmake-build/programs/zstd -T4 -f README.md -o r.zst
+        ./cmake-build/programs/zstd -d -f r.zst -o r.out
+        cmp README.md r.out
 
   cmake-ccache:
     name: "CMake ccache"
