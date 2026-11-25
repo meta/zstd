@@ -492,6 +492,26 @@ jobs:
       run: |
         LDFLAGS="-static" CC=$XCC QEMU_SYS=$XEMU make clean check
 
+  freebsd:
+    # in a VM on a Linux runner: clang as cc, GNU make as gmake
+    name: FreeBSD 15 (make check)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: make all, make check, in a FreeBSD VM
+      timeout-minutes: 60
+      uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # tag=v1.6.0
+      with:
+        release: '15'   # the newest 15.x release
+        copyback: false
+        cache-after-prepare: true
+        prepare: pkg install -y gmake coreutils
+        run: |
+          set -e
+          cc --version
+          MOREFLAGS="-Werror" gmake -j$(sysctl -n hw.ncpu) all
+          gmake check
+
   mingw-short-test:
     runs-on: windows-latest
     strategy:
