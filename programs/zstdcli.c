@@ -788,6 +788,7 @@ static void printActualCParams(const char* filename, const char* dictFileName, i
 /* Environment variables for parameter setting */
 #define ENV_CLEVEL "ZSTD_CLEVEL"
 #define ENV_NBWORKERS "ZSTD_NBTHREADS"    /* takes lower precedence than directly specifying -T# in the CLI */
+#define ENV_MEMLIMIT "ZSTD_MEMORY"        /* takes lower precedence than -M#, --memory=# or --long=# in the CLI */
 
 /* pick up environment variable */
 static int init_cLevel(void) {
@@ -839,6 +840,26 @@ static unsigned init_nbWorkers(unsigned defaultNbWorkers) {
     (void)defaultNbWorkers;
     return 1;
 #endif
+}
+
+/* same syntax as --memory=# */
+static unsigned init_memLimit(unsigned defaultMemLimit) {
+    const char* const env = getenv(ENV_MEMLIMIT);
+    if (env != NULL) {
+        const char* ptr = env;
+        if ((*ptr>='0') && (*ptr<='9')) {
+            unsigned memLimit;
+            if (readU32FromCharChecked(&ptr, &memLimit)) {
+                DISPLAYLEVEL(2, "Ignore environment variable setting %s=%s: numeric value too large \n", ENV_MEMLIMIT, env);
+                return defaultMemLimit;
+            } else if (*ptr == 0) {
+                return memLimit ? memLimit : defaultMemLimit;  /* 0 means default, as with --memory=0 */
+            }
+        }
+        DISPLAYLEVEL(2, "Ignore environment variable setting %s=%s: not a valid memory size \n", ENV_MEMLIMIT, env);
+    }
+
+    return defaultMemLimit;
 }
 
 #define NEXT_FIELD(ptr) {         \
@@ -1616,7 +1637,7 @@ int main(int argCount, const char* argv[])
     FIO_setMMapDict(prefs, mmapDict);
     if (memLimit == 0) {
         if (compressionParams.windowLog == 0) {
-            memLimit = (U32)1 << g_defaultMaxWindowLog;
+            memLimit = init_memLimit((U32)1 << g_defaultMaxWindowLog);
         } else {
             memLimit = (U32)1 << (compressionParams.windowLog & 31);
     }   }

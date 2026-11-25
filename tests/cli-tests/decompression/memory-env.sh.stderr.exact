@@ -1,0 +1,16 @@
+w256M.zst : Decoding error (36) : Frame requires too much memory for decoding 
+w256M.zst : Window size larger than maximum : 268435456 > 134217728 
+w256M.zst : Use --long=28 or --memory=256MB 
+w8M.zst : Decoding error (36) : Frame requires too much memory for decoding 
+w8M.zst : Window size larger than maximum : 8388608 > 4194304 
+w8M.zst : Use --long=23 or --memory=8MB 
+w256M.zst : Decoding error (36) : Frame requires too much memory for decoding 
+w256M.zst : Window size larger than maximum : 268435456 > 134217728 
+w256M.zst : Use --long=28 or --memory=256MB 
+Ignore environment variable setting ZSTD_MEMORY=abc: not a valid memory size 
+w8M.zst             : 102400 bytes 
+Ignore environment variable setting ZSTD_MEMORY=4XB: not a valid memory size 
+w8M.zst             : 102400 bytes 
+Ignore environment variable setting ZSTD_MEMORY=5GB: numeric value too large 
+w8M.zst             : 102400 bytes 
+w8M.zst             : 102400 bytes 

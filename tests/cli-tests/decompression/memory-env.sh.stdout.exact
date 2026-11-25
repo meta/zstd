@@ -1,0 +1,5 @@
++ default limit
++ raise the limit
++ lower the limit
++ the command line wins
++ invalid values are ignored, 0 means default
