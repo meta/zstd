@@ -238,7 +238,7 @@ Advanced compression options:
 Advanced decompression options:
   -l                            Print information about Zstandard-compressed files.
   --test                        Test compressed file integrity.
-  -M#                           Set the memory usage limit to # megabytes.
+  -M#                           Set the memory usage limit to # bytes (e.g. `-M256MB`).
   --[no-]sparse                 Enable sparse mode. [Default: Enabled for files, disabled for STDOUT.]
   --[no-]pass-through           Pass through uncompressed files as-is. [Default: Disabled]
 

@@ -276,7 +276,7 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("Advanced decompression options:\n");
     DISPLAYOUT("  -l                            Print information about Zstandard-compressed files.\n");
     DISPLAYOUT("  --test                        Test compressed file integrity.\n");
-    DISPLAYOUT("  -M#                           Set the memory usage limit to # megabytes.\n");
+    DISPLAYOUT("  -M#                           Set the memory usage limit to # bytes (e.g. `-M256MB`).\n");
 # if ZSTD_SPARSE_DEFAULT
     DISPLAYOUT("  --[no-]sparse                 Enable sparse mode. [Default: Enabled for files, disabled for STDOUT.]\n");
 # else
