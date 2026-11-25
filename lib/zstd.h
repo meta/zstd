@@ -8,6 +8,14 @@
  * You may select, at your option, one of the above-listed licenses.
  */
 
+/* The clang module libzstd (lib/module.modulemap, used by the Swift package)
+ * always exposes the static-only API: a module map can't define macros. */
+#if defined(__building_module)
+#  if __building_module(libzstd) && !defined(ZSTD_STATIC_LINKING_ONLY)
+#    define ZSTD_STATIC_LINKING_ONLY
+#  endif
+#endif
+
 #ifndef ZSTD_H_235446
 #define ZSTD_H_235446
 
