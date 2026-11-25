@@ -1,5 +1,3 @@
-Trace:FileStat: > UTIL_isLink(file.zst)
-Trace:FileStat: < 0
 Trace:FileStat: > UTIL_isConsole(1)
 Trace:FileStat: < 0
 Trace:FileStat: > UTIL_isConsole(2)

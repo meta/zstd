@@ -1384,7 +1384,12 @@ int main(int argCount, const char* argv[])
     g_utilDisplayLevel = g_displayLevel;
 
 #ifdef UTIL_HAS_CREATEFILELIST
-    if (!followLinks) {
+    /* Explicit input links are safe for operations that don't write files.
+     * Keep followLinks unchanged so recursive traversal still skips links. */
+    if (!followLinks
+     && ( recursive
+       || ( (outFileName == NULL || strcmp(outFileName, stdoutmark) != 0)
+         && operation != zom_test && operation != zom_list ) ) ) {
         unsigned u, fileNamesNb;
         unsigned const nbFilenames = (unsigned)filenames->tableSize;
         for (u=0, fileNamesNb=0; u<nbFilenames; u++) {
@@ -1569,7 +1574,7 @@ int main(int argCount, const char* argv[])
                             "--long=31 for maximum compression. Note that this "
                             "requires high amounts of memory, and the resulting data "
                             "might be rejected by third-party decoders and is "
-                            "therefore only recommended for archival purposes. \n");            
+                            "therefore only recommended for archival purposes. \n");
             cLevel = maxCLevel;
     }   }
 #endif

@@ -291,6 +291,43 @@ println "test : decompress into stdout"
 zstd -d tmpCompressed -c > tmpResult    # decompression using stdout
 zstd --decompress tmpCompressed -c > tmpResult
 zstd --decompress tmpCompressed --stdout > tmpResult
+# Reading an explicit symlink is safe when no file output is created.
+# Recursive directory traversal must still avoid links by default.
+if [ "$isWindows" != true ]; then
+    println "test : read symbolic links with stdout, test and list modes"
+    ln -sfn tmp.zst tmpSymlink.zst
+    zstd -dc tmpSymlink.zst > tmpResult
+    $DIFF -q tmp tmpResult
+    zstd --decompress --stdout tmpSymlink.zst > tmpResult
+    $DIFF -q tmp tmpResult
+    zstd -c tmpSymlink.zst | zstd -dc > tmpResult
+    $DIFF -q tmp.zst tmpResult
+    zstd -t tmpSymlink.zst
+    zstd -l tmpSymlink.zst > $INTOVOID
+    zstd --rm -dc tmpSymlink.zst > tmpResult
+    $DIFF -q tmp tmpResult
+    test -L tmpSymlink.zst
+    test -f tmp.zst
+    zstd -d tmpSymlink.zst 2> tmpSymlinkErr && die "Must still refuse links for on-disk output"
+    $GREP "symbolic link" tmpSymlinkErr
+    test ! -e tmpSymlink
+    rm -f tmpSymlink.zst tmpSymlinkErr
+    println "test : -r must not follow explicit symbolic links, even with stdout"
+    rm -rf tmpSymDir tmpSymDirLink
+    mkdir tmpSymDir
+    echo "inside linked directory" > tmpSymDir/file
+    ln -sfn tmpSymDir tmpSymDirLink
+    zstd -r -c tmp tmpSymDirLink 2> tmpSymlinkErr > tmpSymlinkOut.zst
+    $GREP "tmpSymDirLink is a symbolic link" tmpSymlinkErr
+    zstd -dc tmpSymlinkOut.zst > tmpResult
+    $DIFF -q tmp tmpResult
+    # -f still follows explicit links with -r
+    zstd -r -c -f tmp tmpSymDirLink > tmpSymlinkOut.zst
+    zstd -dc tmpSymlinkOut.zst > tmpResult
+    cat tmp tmpSymDir/file > tmpExpected
+    $DIFF -q tmpExpected tmpResult
+    rm -rf tmpSymDir tmpSymDirLink tmpSymlinkErr tmpSymlinkOut.zst tmpExpected
+fi
 println "test : decompress from stdin into stdout"
 zstd -dc   < tmp.zst > $INTOVOID   # combine decompression, stdin & stdout
 zstd -dc - < tmp.zst > $INTOVOID

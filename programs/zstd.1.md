@@ -58,6 +58,12 @@ whose name is derived from the source _file_ name:
 It is possible to concatenate multiple `.zst` files. `zstd` will decompress
 such agglomerated file as if it was a single `.zst` file.
 
+### Symbolic Links
+A symbolic link named on the command line is followed when no output file is
+written. When an output file would be written, or when `-r` is used, symbolic
+links are skipped with a warning. `-f` overrides this and follows all symbolic
+links.
+
 OPTIONS
 -------
 
