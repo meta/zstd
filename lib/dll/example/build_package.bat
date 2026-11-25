@@ -41,6 +41,8 @@ if "%BUILD_TYPE%"=="cmake" (
     echo Copying CMake build artifacts...
     call :copyFile "build\cmake\build\lib\Release\zstd_static.lib" "bin\static\libzstd_static.lib"
     call :copyFile "build\cmake\build\lib\Release\zstd.dll" "bin\dll\libzstd.dll"
+    call :copyFile "build\cmake\build\lib\Release\zstd.dll" "bin\dll\zstd.dll"
+    call :copyFile "build\cmake\build\lib\Release\zstd.lib" "bin\dll\libzstd.lib"
     call :copyFile "build\cmake\build\lib\Release\zstd.lib" "bin\dll\zstd.lib"
     call :copyFile "build\cmake\build\programs\Release\zstd.exe" "bin\zstd.exe"
     call :copyFile "lib\dll\example\README.md" "bin\README.md"
