@@ -433,6 +433,9 @@ Since dictionary compression is mostly effective for small files, the expectatio
 .IP
 \fB\-\-train\fR supports multithreading if \fBzstd\fR is compiled with threading support (default)\. Additional advanced parameters can be specified with \fB\-\-train\-fastcover\fR\. The legacy dictionary builder can be accessed with \fB\-\-train\-legacy\fR\. The slower cover dictionary builder can be accessed with \fB\-\-train\-cover\fR\. Default \fB\-\-train\fR is equivalent to \fB\-\-train\-fastcover=d=8,steps=4\fR\.
 .
+.IP
+The dictionary is saved in the zstd dictionary format, see \fB\-\-raw\-dict\fR for a raw dictionary\.
+.
 .TP
 \fB\-o FILE\fR
 Dictionary saved into \fBFILE\fR (default name: dictionary)\.
@@ -462,6 +465,10 @@ A dictionary ID is a locally unique ID\. The decoder will use this value to veri
 .
 .IP
 Note that RFC8878 reserves IDs less than 32768 and greater than or equal to 2^31, so they should not be used in public\.
+.
+.TP
+\fB\-\-raw\-dict\fR
+Save a raw dictionary: only its content, without the zstd header (magic number, dictionary ID and entropy tables)\. Some formats require a raw dictionary, such as the \fBdcz\fR content encoding of HTTP Compression Dictionary Transport (RFC 9842)\. \fBzstd \-D\fR accepts raw dictionaries too, but the full dictionary usually compresses better, thanks to its entropy tables\. \fB\-\-dictID\fR has no effect with \fB\-\-raw\-dict\fR\.
 .
 .TP
 \fB\-\-train\-cover[=k#,d=#,steps=#,split=#,shrink[=#]]\fR

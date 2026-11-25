@@ -1,0 +1,3 @@
++ --train
++ --train-cover=k=48,d=8
++ --train-legacy

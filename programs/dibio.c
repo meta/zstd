@@ -327,7 +327,8 @@ static fileStats DiB_fileStats(const char** fileNamesTable, int nbFiles, size_t 
 int DiB_trainFromFiles(const char* dictFileName, size_t maxDictSize,
                        const char** fileNamesTable, int nbFiles, size_t chunkSize,
                        ZDICT_legacy_params_t* params, ZDICT_cover_params_t* coverParams,
-                       ZDICT_fastCover_params_t* fastCoverParams, int optimize, unsigned memLimit)
+                       ZDICT_fastCover_params_t* fastCoverParams, int optimize, unsigned memLimit,
+                       int rawDict)
 {
     fileStats fs;
     size_t* sampleSizes; /* vector of sample sizes. Each sample can be up to SAMPLESIZE_MAX */
@@ -442,8 +443,20 @@ int DiB_trainFromFiles(const char* dictFileName, size_t maxDictSize,
             goto _cleanup;
         }
         /* save dict */
-        DISPLAYLEVEL(2, "Save dictionary of size %u into file %s \n", (unsigned)dictSize, dictFileName);
-        DiB_saveDict(dictFileName, dictBuffer, dictSize);
+        if (rawDict) {
+            /* raw content dictionary: drop the header (magic number, dictID, entropy tables) */
+            size_t const headerSize = ZDICT_getDictHeaderSize(dictBuffer, dictSize);
+            if (ZDICT_isError(headerSize)) {
+                DISPLAYLEVEL(1, "cannot extract dictionary content : %s \n", ZDICT_getErrorName(headerSize));   /* should not happen */
+                result = 1;
+                goto _cleanup;
+            }
+            DISPLAYLEVEL(2, "Save raw dictionary of size %u into file %s \n", (unsigned)(dictSize - headerSize), dictFileName);
+            DiB_saveDict(dictFileName, (const char*)dictBuffer + headerSize, dictSize - headerSize);
+        } else {
+            DISPLAYLEVEL(2, "Save dictionary of size %u into file %s \n", (unsigned)dictSize, dictFileName);
+            DiB_saveDict(dictFileName, dictBuffer, dictSize);
+        }
     }
 
     /* clean up */

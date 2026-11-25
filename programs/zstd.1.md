@@ -542,6 +542,8 @@ Compression of small files similar to the sample set will be greatly improved.
     The slower cover dictionary builder can be accessed with `--train-cover`.
     Default `--train` is equivalent to `--train-fastcover=d=8,steps=4`.
 
+    The dictionary is saved in the zstd dictionary format, see `--raw-dict` for a raw dictionary.
+
 * `-o FILE`:
     Dictionary saved into `FILE` (default name: dictionary).
 * `--maxdict=#`:
@@ -588,6 +590,15 @@ Compression of small files similar to the sample set will be greatly improved.
     This compares favorably to 4 bytes default.
 
     Note that RFC8878 reserves IDs less than 32768 and greater than or equal to 2\^31, so they should not be used in public.
+
+* `--raw-dict`:
+    Save a raw dictionary: only its content, without the zstd header
+    (magic number, dictionary ID and entropy tables).
+    Some formats require a raw dictionary, such as the `dcz` content encoding
+    of HTTP Compression Dictionary Transport (RFC 9842).
+    `zstd -D` accepts raw dictionaries too,
+    but the full dictionary usually compresses better, thanks to its entropy tables.
+    `--dictID` has no effect with `--raw-dict`.
 
 * `--train-cover[=k#,d=#,steps=#,split=#,shrink[=#]]`:
     Select parameters for the default dictionary builder algorithm named cover.
