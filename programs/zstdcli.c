@@ -305,6 +305,7 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("  -o NAME                       Use NAME as dictionary name. [Default: %s]\n", g_defaultDictName);
     DISPLAYOUT("  --maxdict=#                   Limit dictionary to specified size #. [Default: %u]\n", g_defaultMaxDictSize);
     DISPLAYOUT("  --dictID=#                    Force dictionary ID to #. [Default: Random]\n");
+    DISPLAYOUT("  --raw-dict                    Save a raw dictionary: only its content, without the zstd header.\n");
 #endif
 
 #ifndef ZSTD_NOBENCH
@@ -933,6 +934,7 @@ int main(int argCount, const char* argv[])
     const char* suffix = ZSTD_EXTENSION;
     unsigned maxDictSize = g_defaultMaxDictSize;
     unsigned dictID = 0;
+    int rawDict = 0;
     size_t streamSrcSize = 0;
     size_t targetCBlockSize = 0;
     size_t srcSizeHint = 0;
@@ -1024,6 +1026,7 @@ int main(int argCount, const char* argv[])
                 if (!strcmp(argument, "--no-asyncio")) { FIO_setAsyncIOFlag(prefs, 0); continue;}
                 if (!strcmp(argument, "--train")) { operation=zom_train; if (outFileName==NULL) outFileName=g_defaultDictName; continue; }
                 if (!strcmp(argument, "--no-dictID")) { FIO_setDictIDFlag(prefs, 0); continue; }
+                if (!strcmp(argument, "--raw-dict")) { rawDict = 1; continue; }
                 if (!strcmp(argument, "--keep")) { removeSrcFile=0; continue; }
                 if (!strcmp(argument, "--rm")) { removeSrcFile=1; continue; }
                 if (!strcmp(argument, "--priority=rt")) { setRealTimePrio = 1; continue; }
@@ -1504,21 +1507,21 @@ int main(int argCount, const char* argv[])
             int const optimize = !coverParams.k || !coverParams.d;
             coverParams.nbThreads = (unsigned)nbWorkers;
             coverParams.zParams = zParams;
-            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, NULL, &coverParams, NULL, optimize, memLimit);
+            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, NULL, &coverParams, NULL, optimize, memLimit, rawDict);
         } else if (dict == fastCover) {
             int const optimize = !fastCoverParams.k || !fastCoverParams.d;
             fastCoverParams.nbThreads = (unsigned)nbWorkers;
             fastCoverParams.zParams = zParams;
-            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, NULL, NULL, &fastCoverParams, optimize, memLimit);
+            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, NULL, NULL, &fastCoverParams, optimize, memLimit, rawDict);
         } else {
             ZDICT_legacy_params_t dictParams;
             memset(&dictParams, 0, sizeof(dictParams));
             dictParams.selectivityLevel = dictSelect;
             dictParams.zParams = zParams;
-            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, &dictParams, NULL, NULL, 0, memLimit);
+            operationResult = DiB_trainFromFiles(outFileName, maxDictSize, filenames->fileNames, (int)filenames->tableSize, chunkSize, &dictParams, NULL, NULL, 0, memLimit, rawDict);
         }
 #else
-        (void)dictCLevel; (void)dictSelect; (void)dictID;  (void)maxDictSize; /* not used when ZSTD_NODICT set */
+        (void)dictCLevel; (void)dictSelect; (void)dictID;  (void)maxDictSize; (void)rawDict; /* not used when ZSTD_NODICT set */
         DISPLAYLEVEL(1, "training mode not available \n");
         operationResult = 1;
 #endif

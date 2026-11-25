@@ -254,6 +254,7 @@ Dictionary builder:
   -o NAME                       Use NAME as dictionary name. [Default: dictionary]
   --maxdict=#                   Limit dictionary to specified size #. [Default: 112640]
   --dictID=#                    Force dictionary ID to #. [Default: Random]
+  --raw-dict                    Save a raw dictionary: only its content, without the zstd header.
 
 Benchmark options:
   -b#                           Perform benchmarking with compression level #. [Default: 3]
