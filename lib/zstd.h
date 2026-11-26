@@ -312,6 +312,8 @@ ZSTDLIB_API size_t     ZSTD_freeCCtx(ZSTD_CCtx* cctx);  /* compatible with NULL 
  *  __ignoring any other advanced parameter__ .
  *  If any advanced parameter was set using the advanced API,
  *  they will all be reset. Only @compressionLevel remains.
+ *  The streaming session of @cctx is reset first, as with
+ *  ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only).
  */
 ZSTDLIB_API size_t ZSTD_compressCCtx(ZSTD_CCtx* cctx,
                                      void* dst, size_t dstCapacity,
@@ -847,10 +849,13 @@ typedef enum {
  *            Before starting a new compression job, or changing compression parameters,
  *            it is required to fully flush internal buffers.
  *  - note: if an operation ends with an error, it may leave @cctx in an undefined state.
- *          Therefore, it's UB to invoke ZSTD_compressStream2() of ZSTD_compressStream() on such a state.
+ *          Therefore, it's UB to invoke ZSTD_compressStream2() or ZSTD_compressStream() on such a state.
  *          In order to be re-employed after an error, a state must be reset,
- *          which can be done explicitly (ZSTD_CCtx_reset()),
- *          or is sometimes implied by methods starting a new compression job (ZSTD_initCStream(), ZSTD_compressCCtx())
+ *          which can be done explicitly (`ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only)`),
+ *          or is implied by methods starting a new compression job
+ *          (`ZSTD_initCStream()`, `ZSTD_compress2()`, `ZSTD_compressCCtx()`, `ZSTD_compress_usingDict()`, `ZSTD_compress_usingCDict()`).
+ *          The single-shot functions also leave the session clean:
+ *          streaming can start a new frame afterwards without an explicit reset.
  */
 ZSTDLIB_API size_t ZSTD_compressStream2( ZSTD_CCtx* cctx,
                                          ZSTD_outBuffer* output,
@@ -997,7 +1002,9 @@ ZSTDLIB_API size_t ZSTD_DStreamOutSize(void);   /*!< recommended size for output
  *  or a buffer with specified information (see zdict.h).
  *  Note : This function loads the dictionary, resulting in significant startup delay.
  *         It's intended for a dictionary used only once.
- *  Note 2 : When `dict == NULL || dictSize < 8` no dictionary is used. */
+ *  Note 2 : When `dict == NULL || dictSize < 8` no dictionary is used.
+ *  Note 3 : The streaming session of @ctx is reset first, as with
+ *           ZSTD_CCtx_reset(ctx, ZSTD_reset_session_only). */
 ZSTDLIB_API size_t ZSTD_compress_usingDict(ZSTD_CCtx* ctx,
                                            void* dst, size_t dstCapacity,
                                      const void* src, size_t srcSize,
@@ -1048,7 +1055,9 @@ ZSTDLIB_API size_t      ZSTD_freeCDict(ZSTD_CDict* CDict);
  *  Compression using a digested Dictionary.
  *  Recommended when same dictionary is used multiple times.
  *  Note : compression level is _decided at dictionary creation time_,
- *     and frame parameters are hardcoded (dictID=yes, contentSize=yes, checksum=no) */
+ *     and frame parameters are hardcoded (dictID=yes, contentSize=yes, checksum=no)
+ *  Note 2 : The streaming session of @cctx is reset first, as with
+ *           ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only). */
 ZSTDLIB_API size_t ZSTD_compress_usingCDict(ZSTD_CCtx* cctx,
                                             void* dst, size_t dstCapacity,
                                       const void* src, size_t srcSize,
