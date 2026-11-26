@@ -1437,6 +1437,7 @@ static size_t ZSTDv01_getcBlockSize(const void* src, size_t srcSize, blockProper
     bpPtr->origSize = (bpPtr->blockType == bt_rle) ? cSize : 0;
 
     if (bpPtr->blockType == bt_end) return 0;
+    if (cSize > BLOCKSIZE) return ERROR(corruption_detected);
     if (bpPtr->blockType == bt_rle) return 1;
     return cSize;
 }
@@ -1729,10 +1730,11 @@ static size_t ZSTD_execSequence(BYTE* op,
     /* checks */
     size_t const seqLength = sequence.litLength + sequence.matchLength;
 
+    if (sequence.offset == 0) return ERROR(corruption_detected);
     if (seqLength > (size_t)(oend - op)) return ERROR(dstSize_tooSmall);
     if (sequence.litLength > (size_t)(litLimit - *litPtr)) return ERROR(corruption_detected);
     /* Now we know there are no overflow in literal nor match lengths, can use pointer checks */
-    if (sequence.offset > (U32)(oLitEnd - base)) return ERROR(corruption_detected);
+    if (sequence.offset > (size_t)(oLitEnd - base)) return ERROR(corruption_detected);
 
     if (endMatch > oend) return ERROR(dstSize_tooSmall);   /* overwrite beyond dst buffer */
     if (litEnd > litLimit) return ERROR(corruption_detected);   /* overRead beyond lit buffer */
@@ -1750,13 +1752,12 @@ static size_t ZSTD_execSequence(BYTE* op,
     /* copy Match */
     {
         const U32 overlapRisk = (((size_t)(litEnd - endMatch)) < 12);
-        const BYTE* match = op - sequence.offset;            /* possible underflow at op - offset ? */
+        const BYTE* match = op - sequence.offset;            /* >= base : see the offset check above */
         size_t qutt = 12;
         U64 saved[2];
 
         /* check */
         if (match < base) return ERROR(corruption_detected);
-        if (sequence.offset > (size_t)base) return ERROR(corruption_detected);
 
         /* save beginning of literal sequence, in case of write overlap */
         if (overlapRisk)

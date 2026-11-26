@@ -8,6 +8,12 @@
  * You may select, at your option, one of the above-listed licenses.
  */
 
+/* Linux's O_PATH opens a directory without requiring read permission.
+ * Its feature-test macro must precede every system header. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#  define _GNU_SOURCE
+#endif
+
 /*-****************************************
 *  Dependencies
 ******************************************/
@@ -15,14 +21,24 @@
 #include <stdlib.h>     /* malloc, realloc, free */
 #include <stdio.h>      /* fprintf */
 #include <time.h>       /* clock_t, clock, CLOCKS_PER_SEC, nanosleep */
+#include <fcntl.h>      /* open, O_RDONLY, AT_FDCWD */
 #include <errno.h>
 #include <assert.h>
+
+#ifndef UTIL_HAVE_OPENAT
+#  if !defined(_WIN32) && (PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime)
+#    define UTIL_HAVE_OPENAT 1
+#  else
+#    define UTIL_HAVE_OPENAT 0
+#  endif
+#endif
 
 #if defined(__FreeBSD__)
 #include <sys/param.h> /* __FreeBSD_version */
 #endif /* #ifdef __FreeBSD__ */
 
 #if defined(_WIN32)
+#  include <windows.h>    /* CreateFileA, GetFileInformationByHandle */
 #  include <sys/utime.h>  /* utime */
 #  include <io.h>         /* _chmod */
 #  define ZSTD_USE_UTIMENSAT 0
@@ -35,9 +51,7 @@
 #  else
 #    define ZSTD_USE_UTIMENSAT 0
 #  endif
-#  if ZSTD_USE_UTIMENSAT
-#    include <fcntl.h>    /* AT_FDCWD */
-#  else
+#  if !ZSTD_USE_UTIMENSAT
 #    include <utime.h>    /* utime */
 #  endif
 #endif
@@ -50,6 +64,15 @@
 #  include <dirent.h>       /* opendir, readdir */
 #  include <string.h>       /* strerror, memcpy */
 #endif /* #ifdef _WIN32 */
+
+/* Recent glibc versions expose _Generic-based string macros under
+ * _GNU_SOURCE. Use the ordinary C90 functions in pre-C11 builds. */
+#if defined(__GLIBC__) && !defined(__cplusplus) \
+    && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L)
+#  undef strchr
+#  undef strrchr
+#  undef strstr
+#endif
 
 /*-****************************************
 *  Internal Macros
@@ -267,6 +290,16 @@ int UTIL_fchmod(const int fd, char const* filename, const stat_t* statbuf, mode_
     }
 }
 
+#if ZSTD_USE_UTIMENSAT
+static int UTIL_utimensat(int dirfd, const char* filename,
+                         const stat_t* statbuf, int flags)
+{
+    struct timespec timebuf[2] = { {0, UTIME_NOW} };  /* (atime, mtime) */
+    timebuf[1] = statbuf->st_mtim;
+    return utimensat(dirfd, filename, timebuf, flags);
+}
+#endif
+
 /* set access and modification times */
 int UTIL_utime(const char* filename, const stat_t *statbuf)
 {
@@ -282,12 +315,7 @@ int UTIL_utime(const char* filename, const stat_t *statbuf)
      * See https://docs.freebsd.org/en/books/porters-handbook/versions/.
      */
 #if ZSTD_USE_UTIMENSAT
-    {
-        /* (atime, mtime) */
-        struct timespec timebuf[2] = { {0, UTIME_NOW} };
-        timebuf[1] = statbuf->st_mtim;
-        ret = utimensat(AT_FDCWD, filename, timebuf, 0);
-    }
+    ret = UTIL_utimensat(AT_FDCWD, filename, statbuf, 0);
 #else
     {
         struct utimbuf timebuf;
@@ -299,6 +327,150 @@ int UTIL_utime(const char* filename, const stat_t *statbuf)
     errno = 0;
     UTIL_TRACE_RET(ret);
     return ret;
+}
+
+#if UTIL_HAVE_OPENAT && !ZSTD_USE_UTIMENSAT
+#  error "UTIL_HAVE_OPENAT requires utimensat()"
+#endif
+
+#if UTIL_HAVE_OPENAT
+static const char* UTIL_baseName(const char* filename)
+{
+    const char* const sep = strrchr(filename, '/');
+    return sep == NULL ? filename : sep + 1;
+}
+#endif
+
+int UTIL_openParentDir(const char* filename, int refDir, const char* refName)
+{
+#if UTIL_HAVE_OPENAT
+    /* The directory is only used to resolve names : O_SEARCH (or Linux O_PATH)
+     * doesn't require read permission on it. On platforms without either,
+     * opening a directory without read permission can still fail. */
+#  if defined(O_PATH)
+    int const flags = O_PATH | O_DIRECTORY | O_CLOEXEC;
+#  elif defined(O_SEARCH)
+    int const flags = O_SEARCH | O_DIRECTORY | O_CLOEXEC;
+#  else
+    int const flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
+#  endif
+    const char* const base = UTIL_baseName(filename);
+    size_t const prefixLen = (size_t)(base - filename);
+    char* dirName;
+    int fd;
+    if (*base == '\0') return -1;
+    if (refDir >= 0 && refName != NULL
+     && (size_t)(UTIL_baseName(refName) - refName) == prefixLen
+     && !memcmp(refName, filename, prefixLen))
+        return refDir;
+    if (prefixLen == 0) return open(".", flags);
+    dirName = (char*)malloc(prefixLen + 1);
+    if (dirName == NULL) return -1;
+    memcpy(dirName, filename, prefixLen);
+    dirName[prefixLen] = '\0';
+    fd = open(dirName, flags);
+    free(dirName);
+    return fd;
+#else
+    (void)filename; (void)refDir; (void)refName;
+    return -1;
+#endif
+}
+
+void UTIL_closeParentDir(int dirfd, int refDir)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0 && dirfd != refDir) close(dirfd);
+#else
+    (void)dirfd; (void)refDir;
+#endif
+}
+
+int UTIL_openInDir(int dirfd, const char* filename, int flags, mode_t mode)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) return openat(dirfd, UTIL_baseName(filename), flags, mode);
+#endif
+    (void)dirfd;
+#if defined(_WIN32)
+    return _open(filename, flags, mode);
+#else
+    return open(filename, flags, mode);
+#endif
+}
+
+FILE* UTIL_fopenReadInDir(int dirfd, const char* filename)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        int const fd = UTIL_openInDir(dirfd, filename, O_RDONLY, 0);
+        FILE* const f = fd < 0 ? NULL : fdopen(fd, "rb");
+        if (fd >= 0 && f == NULL) { int const e = errno; close(fd); errno = e; }
+        return f;
+    }
+#endif
+    (void)dirfd;
+    return fopen(filename, "rb");
+}
+
+int UTIL_removeInDir(int dirfd, const char* filename)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) return unlinkat(dirfd, UTIL_baseName(filename), 0);
+#endif
+    (void)dirfd;
+    return remove(filename);
+}
+
+int UTIL_statInDir(int dirfd, const char* filename, stat_t* statbuf)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        int ret;
+        filename = UTIL_baseName(filename);
+        UTIL_TRACE_CALL("UTIL_statInDir(%d, %s)", dirfd, filename);
+        ret = !fstatat(dirfd, filename, statbuf, 0);
+        UTIL_TRACE_RET(ret);
+        return ret;
+    }
+#endif
+    (void)dirfd;
+    return UTIL_stat(filename, statbuf);
+}
+
+int UTIL_isLinkInDir(int dirfd, const char* filename)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        stat_t statbuf;
+        int ret;
+        filename = UTIL_baseName(filename);
+        UTIL_TRACE_CALL("UTIL_isLinkInDir(%d, %s)", dirfd, filename);
+        ret = !fstatat(dirfd, filename, &statbuf, AT_SYMLINK_NOFOLLOW)
+            && S_ISLNK(statbuf.st_mode);
+        UTIL_TRACE_RET(ret);
+        return ret;
+    }
+#endif
+    (void)dirfd;
+    return UTIL_isLink(filename);
+}
+
+int UTIL_utimeInDir(int dirfd, const char* filename, const stat_t* statbuf)
+{
+#if UTIL_HAVE_OPENAT
+    if (dirfd >= 0) {
+        int ret;
+        filename = UTIL_baseName(filename);
+        UTIL_TRACE_CALL("UTIL_utimeInDir(%d, %s)", dirfd, filename);
+        ret = UTIL_utimensat(dirfd, filename, statbuf, AT_SYMLINK_NOFOLLOW);
+        errno = 0;
+        UTIL_TRACE_RET(ret);
+        return ret;
+    }
+#endif
+    (void)dirfd;
+    return UTIL_utime(filename, statbuf);
 }
 
 int UTIL_setFileStat(const char *filename, const stat_t *statbuf)
@@ -381,17 +553,52 @@ int UTIL_compareStr(const void *p1, const void *p2) {
     return strcmp(* (char * const *) p1, * (char * const *) p2);
 }
 
+#if defined(_WIN32)
+/* note : Windows has no inode numbers, but a file's identity is given by
+ *        its volume serial number and file index, which stay the same
+ *        however the path to the file is spelled */
+static int UTIL_isSameFileWin32(const char* fName1, const char* fName2)
+{
+    BY_HANDLE_FILE_INFORMATION file1Info;
+    BY_HANDLE_FILE_INFORMATION file2Info;
+    HANDLE file1Handle;
+    HANDLE file2Handle;
+    int same;
+
+    if (!strcmp(fName1, fName2)) return 1;
+
+    file1Handle = CreateFileA(fName1, FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (file1Handle == INVALID_HANDLE_VALUE) return 0;
+
+    file2Handle = CreateFileA(fName2, FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (file2Handle == INVALID_HANDLE_VALUE) {
+        CloseHandle(file1Handle);
+        return 0;
+    }
+
+    same = GetFileInformationByHandle(file1Handle, &file1Info)
+        && GetFileInformationByHandle(file2Handle, &file2Info)
+        && file1Info.dwVolumeSerialNumber == file2Info.dwVolumeSerialNumber
+        && file1Info.nFileIndexHigh == file2Info.nFileIndexHigh
+        && file1Info.nFileIndexLow == file2Info.nFileIndexLow;
+
+    CloseHandle(file1Handle);
+    CloseHandle(file2Handle);
+    return same;
+}
+#endif
+
 int UTIL_isSameFile(const char* fName1, const char* fName2)
 {
     int ret;
     assert(fName1 != NULL); assert(fName2 != NULL);
     UTIL_TRACE_CALL("UTIL_isSameFile(%s, %s)", fName1, fName2);
 #if defined(_MSC_VER) || defined(_WIN32)
-    /* note : Visual does not support file identification by inode.
-     *        inode does not work on Windows, even with a posix layer, like msys2.
-     *        The following work-around is limited to detecting exact name repetition only,
-     *        aka `filename` is considered different from `subdir/../filename` */
-    ret = !strcmp(fName1, fName2);
+    ret = UTIL_isSameFileWin32(fName1, fName2);
 #else
     {   stat_t file1Stat;
         stat_t file2Stat;
@@ -412,13 +619,11 @@ int UTIL_isSameFileStat(
     assert(fName1 != NULL); assert(fName2 != NULL);
     UTIL_TRACE_CALL("UTIL_isSameFileStat(%s, %s)", fName1, fName2);
 #if defined(_MSC_VER) || defined(_WIN32)
-    /* note : Visual does not support file identification by inode.
-     *        inode does not work on Windows, even with a posix layer, like msys2.
-     *        The following work-around is limited to detecting exact name repetition only,
-     *        aka `filename` is considered different from `subdir/../filename` */
+    /* note : stat_t does not carry a usable file identity on Windows,
+     *        so compare the files themselves */
     (void)file1Stat;
     (void)file2Stat;
-    ret = !strcmp(fName1, fName2);
+    ret = UTIL_isSameFileWin32(fName1, fName2);
 #else
     {
         ret =  (file1Stat->st_dev == file2Stat->st_dev)
@@ -490,6 +695,17 @@ int UTIL_isBlockDevStat(const stat_t* statbuf)
     return 0;
 }
 
+#if defined(_WIN32)
+/* Symbolic links and junctions are "name surrogate" reparse points.
+ * Other reparse points (OneDrive placeholders, deduplicated files, ...)
+ * are regular files and directories : they must not be treated as links. */
+static int UTIL_isNameSurrogate(DWORD attributes, DWORD reparseTag)
+{
+    return (attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+        && IsReparseTagNameSurrogate(reparseTag);
+}
+#endif
+
 int UTIL_isLink(const char* infilename)
 {
     UTIL_TRACE_CALL("UTIL_isLink(%s)", infilename);
@@ -501,6 +717,24 @@ int UTIL_isLink(const char* infilename)
         if (!r && S_ISLNK(statbuf.st_mode)) {
             UTIL_TRACE_RET(1);
             return 1;
+        }
+    }
+#elif defined(_WIN32)
+    {
+        DWORD const attributes = GetFileAttributesA(infilename);
+        if ( attributes != INVALID_FILE_ATTRIBUTES
+          && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) ) {
+            /* GetFileAttributes() does not report the reparse tag, FindFirstFile() does */
+            WIN32_FIND_DATAA findData;
+            HANDLE const hFind = FindFirstFileA(infilename, &findData);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                int const isLink = UTIL_isNameSurrogate(findData.dwFileAttributes, findData.dwReserved0);
+                FindClose(hFind);
+                if (isLink) {
+                    UTIL_TRACE_RET(1);
+                    return 1;
+                }
+            }
         }
     }
 #endif
@@ -730,6 +964,13 @@ static const char** UTIL_createLinePointers(char* buffer, size_t numLines, size_
             len++;
         }
 
+#if defined(_WIN32)
+        /* note: read in binary mode, so the CRT no longer folds CRLF; CR is legal in a filename elsewhere */
+        if (len > 0 && buffer[pos + len - 1] == '\r') {
+            buffer[pos + len - 1] = '\0';
+        }
+#endif
+
         /* Move past this string and its null terminator */
         pos += len;
         if (pos < bufferSize) pos++;  /* Skip the null terminator if we're not at buffer end */
@@ -942,6 +1183,11 @@ static int UTIL_prepareFileList(const char* dirName,
         memcpy(path+dirLength+1, cFile.cFileName, fnameLength);
         pathLength = dirLength+1+fnameLength;
         path[pathLength] = 0;
+        if (!followLinks && UTIL_isNameSurrogate(cFile.dwFileAttributes, cFile.dwReserved0)) {
+            UTIL_DISPLAYLEVEL(2, "Warning : %s is a symbolic link, ignoring\n", path);
+            free(path);
+            continue;
+        }
         if (cFile.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if ( strcmp (cFile.cFileName, "..") == 0
               || strcmp (cFile.cFileName, ".") == 0 )

@@ -310,7 +310,7 @@ static int COVER_cmp8(COVER_ctx_t *ctx, const void *lp, const void *rp) {
 }
 
 /**
- * Same as COVER_cmp() except ties are broken by pointer value
+ * Same as COVER_cmp() except ties are broken by the position each element holds
  */
 #if (ZDICT_QSORT == ZDICT_QSORT_MSVC) || (ZDICT_QSORT == ZDICT_QSORT_APPLE)
 static int WIN_CDECL COVER_strict_cmp(void* g_coverCtx, const void* lp, const void* rp) {
@@ -321,7 +321,9 @@ static int COVER_strict_cmp(const void *lp, const void *rp) {
 #endif
   int result = COVER_cmp((COVER_ctx_t*)g_coverCtx, lp, rp);
   if (result == 0) {
-    result = lp < rp ? -1 : 1;
+    U32 const lpos = *(const U32 *)lp;
+    U32 const rpos = *(const U32 *)rp;
+    result = (lpos < rpos) ? -1 : (lpos > rpos) ? 1 : 0;
   }
   return result;
 }
@@ -337,7 +339,9 @@ static int COVER_strict_cmp8(const void *lp, const void *rp) {
 #endif
   int result = COVER_cmp8((COVER_ctx_t*)g_coverCtx, lp, rp);
   if (result == 0) {
-    result = lp < rp ? -1 : 1;
+    U32 const lpos = *(const U32 *)lp;
+    U32 const rpos = *(const U32 *)rp;
+    result = (lpos < rpos) ? -1 : (lpos > rpos) ? 1 : 0;
   }
   return result;
 }
@@ -636,12 +640,23 @@ static size_t COVER_ctx_init(COVER_ctx_t *ctx, const void *samplesBuffer,
   const unsigned nbTestSamples = splitPoint < 1.0 ? nbSamples - nbTrainSamples : nbSamples;
   const size_t trainingSamplesSize = splitPoint < 1.0 ? COVER_sum(samplesSizes, nbTrainSamples) : totalSamplesSize;
   const size_t testSamplesSize = splitPoint < 1.0 ? COVER_sum(samplesSizes + nbTrainSamples, nbTestSamples) : totalSamplesSize;
+  const size_t readLength = MAX(d, sizeof(U64));
   ctx->displayLevel = displayLevel;
   /* Checks */
-  if (totalSamplesSize < MAX(d, sizeof(U64)) ||
+  if (totalSamplesSize < readLength ||
       totalSamplesSize >= (size_t)COVER_MAX_SAMPLES_SIZE) {
     DISPLAYLEVEL(1, "Total samples size is too large (%u MB), maximum size is %u MB\n",
                  (unsigned)(totalSamplesSize>>20), (COVER_MAX_SAMPLES_SIZE >> 20));
+    return ERROR(srcSize_wrong);
+  }
+  /* The training set must be large enough for the partial suffix array, whose
+   * size is `trainingSamplesSize - MAX(d, sizeof(U64)) + 1`. When splitPoint
+   * < 1.0 the training set is a subset of the corpus, so it can be smaller
+   * than the total even after the check above. Guard against the size_t
+   * subtraction underflowing into a huge allocation. */
+  if (trainingSamplesSize < MAX(d, sizeof(U64))) {
+    DISPLAYLEVEL(1, "Training samples size is too small (%u), minimum size is %u\n",
+                 (unsigned)trainingSamplesSize, (unsigned)MAX(d, sizeof(U64)));
     return ERROR(srcSize_wrong);
   }
   /* Check if there are at least 5 training samples */
@@ -666,7 +681,7 @@ static size_t COVER_ctx_init(COVER_ctx_t *ctx, const void *samplesBuffer,
   ctx->nbTrainSamples = nbTrainSamples;
   ctx->nbTestSamples = nbTestSamples;
   /* Partial suffix array */
-  ctx->suffixSize = trainingSamplesSize - MAX(d, sizeof(U64)) + 1;
+  ctx->suffixSize = trainingSamplesSize - readLength + 1;
   ctx->suffix = (U32 *)malloc(ctx->suffixSize * sizeof(U32));
   /* Maps index to the dmerID */
   ctx->dmerAt = (U32 *)malloc(ctx->suffixSize * sizeof(U32));
@@ -692,7 +707,7 @@ static size_t COVER_ctx_init(COVER_ctx_t *ctx, const void *samplesBuffer,
   {
     /* suffix is a partial suffix array.
      * It only sorts suffixes by their first parameters.d bytes.
-     * The sort is stable, so each dmer group is sorted by position in input.
+     * Ties are broken by position, so each group is sorted by input position.
      */
     U32 i;
     for (i = 0; i < ctx->suffixSize; ++i) {
@@ -1052,6 +1067,8 @@ COVER_dictSelection_t COVER_selectDict(BYTE* customDictContent, size_t dictBuffe
 
   size_t largestDict = 0;
   size_t largestCompressed = 0;
+  size_t candidateContentSize = 0;
+  size_t candidateDict = 0;
   BYTE* customDictContentEnd = customDictContent + dictContentSize;
 
   BYTE* largestDictbuffer = (BYTE*)malloc(dictBufferCapacity);
@@ -1066,20 +1083,20 @@ COVER_dictSelection_t COVER_selectDict(BYTE* customDictContent, size_t dictBuffe
 
   /* Initial dictionary size and compressed size */
   memcpy(largestDictbuffer, customDictContent, dictContentSize);
-  dictContentSize = ZDICT_finalizeDictionary(
+  largestDict = ZDICT_finalizeDictionary(
     largestDictbuffer, dictBufferCapacity, customDictContent, dictContentSize,
     samplesBuffer, samplesSizes, nbFinalizeSamples, params.zParams);
 
-  if (ZDICT_isError(dictContentSize)) {
+  if (ZDICT_isError(largestDict)) {
     free(largestDictbuffer);
     free(candidateDictBuffer);
-    return COVER_dictSelectionError(dictContentSize);
+    return COVER_dictSelectionError(largestDict);
   }
 
   totalCompressedSize = COVER_checkTotalCompressedSize(params, samplesSizes,
                                                        samplesBuffer, offsets,
                                                        nbCheckSamples, nbSamples,
-                                                       largestDictbuffer, dictContentSize);
+                                                       largestDictbuffer, largestDict);
 
   if (ZSTD_isError(totalCompressedSize)) {
     free(largestDictbuffer);
@@ -1089,31 +1106,29 @@ COVER_dictSelection_t COVER_selectDict(BYTE* customDictContent, size_t dictBuffe
 
   if (params.shrinkDict == 0) {
     free(candidateDictBuffer);
-    return setDictSelection(largestDictbuffer, dictContentSize, totalCompressedSize);
+    return setDictSelection(largestDictbuffer, largestDict, totalCompressedSize);
   }
 
-  largestDict = dictContentSize;
   largestCompressed = totalCompressedSize;
-  dictContentSize = ZDICT_DICTSIZE_MIN;
+  candidateContentSize = ZDICT_DICTSIZE_MIN;
 
-  /* Largest dict is initially at least ZDICT_DICTSIZE_MIN */
-  while (dictContentSize < largestDict) {
+  while (candidateContentSize < dictContentSize) {
     memcpy(candidateDictBuffer, largestDictbuffer, largestDict);
-    dictContentSize = ZDICT_finalizeDictionary(
-      candidateDictBuffer, dictBufferCapacity, customDictContentEnd - dictContentSize, dictContentSize,
+    candidateDict = ZDICT_finalizeDictionary(
+      candidateDictBuffer, dictBufferCapacity, customDictContentEnd - candidateContentSize, candidateContentSize,
       samplesBuffer, samplesSizes, nbFinalizeSamples, params.zParams);
 
-    if (ZDICT_isError(dictContentSize)) {
+    if (ZDICT_isError(candidateDict)) {
       free(largestDictbuffer);
       free(candidateDictBuffer);
-      return COVER_dictSelectionError(dictContentSize);
+      return COVER_dictSelectionError(candidateDict);
 
     }
 
     totalCompressedSize = COVER_checkTotalCompressedSize(params, samplesSizes,
                                                          samplesBuffer, offsets,
                                                          nbCheckSamples, nbSamples,
-                                                         candidateDictBuffer, dictContentSize);
+                                                         candidateDictBuffer, candidateDict);
 
     if (ZSTD_isError(totalCompressedSize)) {
       free(largestDictbuffer);
@@ -1123,14 +1138,13 @@ COVER_dictSelection_t COVER_selectDict(BYTE* customDictContent, size_t dictBuffe
 
     if ((double)totalCompressedSize <= (double)largestCompressed * regressionTolerance) {
       free(largestDictbuffer);
-      return setDictSelection( candidateDictBuffer, dictContentSize, totalCompressedSize );
+      return setDictSelection( candidateDictBuffer, candidateDict, totalCompressedSize );
     }
-    dictContentSize *= 2;
+    candidateContentSize *= 2;
   }
-  dictContentSize = largestDict;
   totalCompressedSize = largestCompressed;
   free(candidateDictBuffer);
-  return setDictSelection( largestDictbuffer, dictContentSize, totalCompressedSize );
+  return setDictSelection( largestDictbuffer, largestDict, totalCompressedSize );
 }
 
 /**

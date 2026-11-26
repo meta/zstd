@@ -1,5 +1,5 @@
 .
-.TH "ZSTD" "1" "February 2025" "zstd 1.5.7" "User Commands"
+.TH "ZSTD" "1" "November 2026" "zstd 1.6.0" "User Commands"
 .
 .SH "NAME"
 \fBzstd\fR \- zstd, zstdmt, unzstd, zstdcat \- Compress or decompress \.zst files
@@ -102,13 +102,16 @@ Display information related to a zstd compressed file, such as size, ratio, and 
 \fB\-#\fR: selects \fB#\fR compression level [1\-19] (default: 3)\. Higher compression levels \fIgenerally\fR produce higher compression ratio at the expense of speed and memory\. A rough rule of thumb is that compression speed is expected to be divided by 2 every 2 levels\. Technically, each level is mapped to a set of advanced parameters (that can also be modified individually, see below)\. Because the compressor\'s behavior highly depends on the content to compress, there\'s no guarantee of a smooth progression from one level to another\.
 .
 .IP "\(bu" 4
-\fB\-\-ultra\fR: unlocks high compression levels 20+ (maximum 22), using a lot more memory\. Note that decompression will also require more memory when using these levels\.
+\fB\-\-ultra\fR: unlocks high compression levels 20+ (maximum 22), using a lot more memory\. Decompression will also need more memory when using these levels\.
+.
+.IP "\(bu" 4
+\fB\-\-max\fR: set advanced parameters to reach maximum compression\. warning: this setting is very slow and uses a lot of resources\. It\'s inappropriate for 32\-bit mode and therefore disabled in this mode\.
 .
 .IP "\(bu" 4
 \fB\-\-fast[=#]\fR: switch to ultra\-fast compression levels\. If \fB=#\fR is not present, it defaults to \fB1\fR\. The higher the value, the faster the compression speed, at the cost of some compression ratio\. This setting overwrites compression level if one was set previously\. Similarly, if a compression level is set after \fB\-\-fast\fR, it overrides it\.
 .
 .IP "\(bu" 4
-\fB\-T#\fR, \fB\-\-threads=#\fR: Compress using \fB#\fR working threads (default: between 1 and 4 depending on physical CPU cores; see \fBZSTD_NBTHREADS\fR below)\. If \fB#\fR is 0, attempt to detect and use the number of physical CPU cores\. In all cases, the nb of threads is capped to \fBZSTDMT_NBWORKERS_MAX\fR, which is either 64 in 32\-bit mode, or 256 for 64\-bit environments\. This modifier does nothing if \fBzstd\fR is compiled without multithread support\.
+\fB\-T#\fR, \fB\-\-threads=#\fR: Compress using \fB#\fR working threads (default: between 1 and 4 depending on the number of logical CPU cores; see \fBZSTD_NBTHREADS\fR below)\. If \fB#\fR is 0, attempt to detect and use the number of physical CPU cores\. In all cases, the nb of threads is capped to \fBZSTDMT_NBWORKERS_MAX\fR, which is either 64 in 32\-bit mode, or 256 for 64\-bit environments\. This modifier does nothing if \fBzstd\fR is compiled without multithread support\. Note that memory usage increases with each thread\.
 .
 .IP "\(bu" 4
 \fB\-\-single\-thread\fR: Use a single thread for both I/O and compression\. As compression is serialized with I/O, this can be slightly slower\. Single\-thread mode features significantly lower memory usage, which can be useful for systems with limited amount of memory, such as 32\-bit systems\.
@@ -129,13 +132,10 @@ Note 2: this mode is different from \fB\-T1\fR, which spawns 1 compression threa
 \fINote\fR: at the time of this writing, \fB\-\-adapt\fR can remain stuck at low speed when combined with multiple worker threads (>=2)\.
 .
 .IP "\(bu" 4
-\fB\-\-long[=#]\fR: enables long distance matching with \fB#\fR \fBwindowLog\fR, if \fB#\fR is not present it defaults to \fB27\fR\. This increases the window size (\fBwindowLog\fR) and memory usage for both the compressor and decompressor\. This setting is designed to improve the compression ratio for files with long matches at a large distance\.
+\fB\-\-long[=#]\fR: enables long distance matching with \fB#\fR \fBwindowLog\fR, if \fB#\fR is not present it defaults to \fB27\fR\. The highest possible value is 31\. This increases the window size (\fBwindowLog\fR) and memory usage for both the compressor and decompressor\. This setting is designed to improve the compression ratio for files with long matches at a large distance\.
 .
 .IP
-Note: If \fBwindowLog\fR is set to larger than 27, \fB\-\-long=windowLog\fR or \fB\-\-memory=windowSize\fR needs to be passed to the decompressor\.
-.
-.IP "\(bu" 4
-\fB\-\-max\fR: set advanced parameters to maximum compression\. warning: this setting is very slow and uses a lot of resources\. It\'s inappropriate for 32\-bit mode and therefore disabled in this mode\.
+Note: If \fBwindowLog\fR is set to larger than 27, \fB\-\-long=windowLog\fR, \fB\-\-max\fR, or \fB\-\-memory=windowSize\fR needs to be passed to the decompressor\.
 .
 .IP "\(bu" 4
 \fB\-D DICT\fR: use \fBDICT\fR as Dictionary to compress or decompress FILE(s)
@@ -168,7 +168,7 @@ Note: for level 19, you can get increased compression ratio at the cost of speed
 \fB\-\-no\-dictID\fR: do not store dictionary ID within frame header (dictionary compression)\. The decoder will have to rely on implicit knowledge about which dictionary to use, it won\'t be able to check if it\'s correct\.
 .
 .IP "\(bu" 4
-\fB\-M#\fR, \fB\-\-memory=#\fR: Set a memory usage limit\. By default, \fBzstd\fR uses 128 MiB for decompression as the maximum amount of memory the decompressor is allowed to use, but you can override this manually if need be in either direction (i\.e\. you can increase or decrease it)\.
+\fB\-M#\fR, \fB\-\-memory=#\fR: Set a memory usage limit\. By default, \fBzstd\fR uses 128 MiB for decompression as the maximum amount of memory the decompressor is allowed to use, but you can override this manually if need be in either direction (i\.e\. you can increase or decrease it)\. This limit also applies when decompressing \fB\.xz\fR and \fB\.lzma\fR files\.
 .
 .IP
 This is also used during compression when using with \fB\-\-patch\-from=\fR\. In this case, this parameter overrides that maximum size allowed for a dictionary\. (128 MiB)\.
@@ -213,13 +213,13 @@ Additionally, this can be used to limit memory for dictionary training\. This pa
 \fB\-\-filelist FILE\fR read a list of files to process as content from \fBFILE\fR\. Format is compatible with \fBls\fR output, with one file per line\.
 .
 .IP "\(bu" 4
-\fB\-\-output\-dir\-flat DIR\fR: resulting files are stored into target \fBDIR\fR directory, instead of same directory as origin file\. Be aware that this command can introduce name collision issues, if multiple files, from different directories, end up having the same name\. Collision resolution ensures first file with a given name will be present in \fBDIR\fR, while in combination with \fB\-f\fR, the last file will be present instead\.
+\fB\-\-output\-dir\-flat DIR\fR: resulting files are stored into target \fBDIR\fR directory, instead of same directory as origin file\. If multiple files, from different directories, would end up having the same name, \fBzstd\fR reports an error and doesn\'t process any file\.
 .
 .IP "\(bu" 4
 \fB\-\-output\-dir\-mirror DIR\fR: similar to \fB\-\-output\-dir\-flat\fR, the output files are stored underneath target \fBDIR\fR directory, but this option will replicate input directory hierarchy into output \fBDIR\fR\.
 .
 .IP
-If input directory contains "\.\.", the files in this directory will be ignored\. If input directory is an absolute directory (i\.e\. "/var/tmp/abc"), it will be stored into the "output\-dir/var/tmp/abc"\. If there are multiple input files or directories, name collision resolution will follow the same rules as \fB\-\-output\-dir\-flat\fR\.
+If input directory contains "\.\.", the files in this directory will be ignored\. If input directory is an absolute directory (i\.e\. "/var/tmp/abc"), it will be stored into the "output\-dir/var/tmp/abc"\.
 .
 .IP "\(bu" 4
 \fB\-\-format=FORMAT\fR: compress and decompress in other formats\. If compiled with support, zstd can compress to or decompress from other compression algorithm formats\. Possibly available options are \fBzstd\fR, \fBgzip\fR, \fBxz\fR, \fBlzma\fR, and \fBlz4\fR\. If no such format is provided, \fBzstd\fR is the default\.
@@ -246,7 +246,7 @@ If input directory contains "\.\.", the files in this directory will be ignored\
 \fB\-\-exclude\-compressed\fR: only compress files that are not already compressed\.
 .
 .IP "\(bu" 4
-\fB\-\-\fR: All arguments after \fB\-\-\fR are treated as files
+\fB\-\-\fR: All arguments after \fB\-\-\fR are treated as files\. \fB\-\fR still means standard input: a file named \fB\-\fR can be given as \fB\./\-\fR\.
 .
 .IP "" 0
 .
@@ -268,7 +268,7 @@ Employing environment variables to set parameters has security implications\. Th
 \fBZSTD_CLEVEL\fR can be used to set the level between 1 and 19 (the "normal" range)\. If the value of \fBZSTD_CLEVEL\fR is not a valid integer, it will be ignored with a warning message\. \fBZSTD_CLEVEL\fR just replaces the default compression level (\fB3\fR)\.
 .
 .P
-\fBZSTD_NBTHREADS\fR can be used to set the number of threads \fBzstd\fR will attempt to use during compression\. If the value of \fBZSTD_NBTHREADS\fR is not a valid unsigned integer, it will be ignored with a warning message\. \fBZSTD_NBTHREADS\fR has a default value of \fBmax(1, min(4, nbCores/4))\fR, and is capped at ZSTDMT_NBWORKERS_MAX==200\. \fBzstd\fR must be compiled with multithread support for this variable to have any effect\.
+\fBZSTD_NBTHREADS\fR can be used to set the number of threads \fBzstd\fR will attempt to use during compression\. If the value of \fBZSTD_NBTHREADS\fR is not a valid unsigned integer, it will be ignored with a warning message\. \fBZSTD_NBTHREADS\fR has a default value of \fBmax(1, min(4, nbLogicalCores/4))\fR, and is capped at \fBZSTDMT_NBWORKERS_MAX\fR, which is either 64 in 32\-bit mode, or 256 for 64\-bit environments\. \fBzstd\fR must be compiled with multithread support for this variable to have any effect\.
 .
 .P
 They can both be overridden by corresponding command line arguments: \fB\-#\fR for compression level and \fB\-T#\fR for number of compression threads\.
@@ -294,7 +294,7 @@ Specify the maximum number of bits for a match distance\.
 The higher number of increases the chance to find a match which usually improves compression ratio\. It also increases memory requirements for the compressor and decompressor\. The minimum \fIwlog\fR is 10 (1 KiB) and the maximum is 30 (1 GiB) on 32\-bit platforms and 31 (2 GiB) on 64\-bit platforms\.
 .
 .IP
-Note: If \fBwindowLog\fR is set to larger than 27, \fB\-\-long=windowLog\fR or \fB\-\-memory=windowSize\fR needs to be passed to the decompressor\.
+Note: If \fBwindowLog\fR is set to larger than 27, \fB\-\-long=windowLog\fR, \fB\-\-max\fR, or \fB\-\-memory=windowSize\fR needs to be passed to the decompressor\.
 .
 .TP
 \fBhashLog\fR=\fIhlog\fR, \fBhlog\fR=\fIhlog\fR
@@ -417,8 +417,8 @@ The following parameters sets advanced compression options to something similar 
 .P
 \fB\-\-zstd\fR=wlog=23,clog=23,hlog=22,slog=6,mml=3,tlen=48,strat=6
 .
-.SS "\-B#:"
-Specify the size of each compression job\. This parameter is only available when multi\-threading is enabled\. Each compression job is run in parallel, so this value indirectly impacts the nb of active threads\. Default job size varies depending on compression level (generally \fB4 * windowSize\fR)\. \fB\-B#\fR makes it possible to manually select a custom size\. Note that job size must respect a minimum value which is enforced transparently\. This minimum is either 512 KB, or \fBoverlapSize\fR, whichever is largest\. Different job sizes will lead to non\-identical compressed frames\.
+.SS "\-\-jobsize=#:"
+Specify the size of each compression job\. This parameter is only meaningful when multi\-threading is enabled\. Each compression job is run in parallel, so this value can indirectly impact the nb of active threads\. Default job size varies depending on compression level (generally \fB4 * windowSize\fR)\. \fB\-\-jobsize=#\fR makes it possible to manually select a custom size\. Note that job size must respect a minimum value which is enforced transparently\. This minimum is either 512 KB, or \fBoverlapSize\fR, whichever is largest\. Different job sizes will lead to non\-identical compressed frames\.
 .
 .SH "DICTIONARY BUILDER"
 \fBzstd\fR offers \fIdictionary\fR compression, which greatly improves efficiency on small files and messages\. It\'s possible to train \fBzstd\fR with a set of samples, the result of which is saved into a file called a \fBdictionary\fR\. Then, during compression and decompression, reference the same dictionary, using command \fB\-D dictionaryFileName\fR\. Compression of small files similar to the sample set will be greatly improved\.
@@ -446,8 +446,8 @@ Limit dictionary to specified size (default: 112640 bytes)\. As usual, quantitie
 Use \fB#\fR compression level during training (optional)\. Will generate statistics more tuned for selected compression level, resulting in a \fIsmall\fR compression ratio improvement for this level\.
 .
 .TP
-\fB\-B#\fR
-Split input files into blocks of size # (default: no split)
+\fB\-\-split=#\fR
+Split input files into independent chunks of size # (default: no split)
 .
 .TP
 \fB\-M#\fR, \fB\-\-memory=#\fR
@@ -530,7 +530,7 @@ The \fBzstd\fR CLI provides a benchmarking mode that can be used to easily find 
 It\'s possible to pass multiple files to the benchmark, and even a directory with \fB\-r DIRECTORY\fR\. When no \fBFILE\fR is provided, the benchmark will use a procedurally generated \fBlorem ipsum\fR text\.
 .
 .P
-Benchmarking will employ \fBmax(1, min(4, nbCores/4))\fR worker threads by default in order to match the behavior of the normal CLI I/O\.
+Benchmarking will employ 1 worker thread by default\. Use \fB\-T#\fR to benchmark with more worker threads\.
 .
 .IP "\(bu" 4
 \fB\-b#\fR: benchmark file(s) using compression level #
@@ -545,7 +545,7 @@ Benchmarking will employ \fBmax(1, min(4, nbCores/4))\fR worker threads by defau
 \fB\-i#\fR: minimum evaluation time, in seconds (default: 3s), benchmark mode only
 .
 .IP "\(bu" 4
-\fB\-B#\fR, \fB\-\-block\-size=#\fR: cut file(s) into independent chunks of size # (default: no chunking)
+\fB\-\-split=#\fR: split input file(s) into independent chunks of size # (default: no chunking)
 .
 .IP "\(bu" 4
 \fB\-S\fR: output one benchmark result per input file (default: consolidated result)

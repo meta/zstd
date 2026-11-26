@@ -20,7 +20,7 @@ jobs:
     - name: make all
       run: make all
 
-  # lasts ~19mn
+  # lasts ~8mn
   make-test:
     runs-on: ubuntu-latest
     env:
@@ -34,7 +34,7 @@ jobs:
         make -j zstd
         ./tests/test_process_substitution.bash ./zstd
 
-  # lasts ~16mn
+  # lasts ~9mn
   make-test-macos:
     runs-on: macos-latest
     steps:
@@ -66,7 +66,7 @@ jobs:
       run: |
         CFLAGS="-Werror -O3" make -j -C tests test-largeDictionary
 
-  # lasts ~9mn
+  # lasts ~4mn
   no-intrinsics-fuzztest:
     runs-on: ubuntu-latest
     steps:
@@ -89,7 +89,7 @@ jobs:
     - name: ub + address sanitizer on zstreamtest
       run: CC=clang make uasan-test-zstream
 
-  # lasts ~11mn
+  # lasts ~5mn
   tsan-fuzztest:
     runs-on: ubuntu-latest
     steps:
@@ -107,7 +107,7 @@ jobs:
         make libc6install
         CC=clang make -C tests test-zstream32 FUZZER_FLAGS="--big-tests"
 
-  # lasts ~13mn
+  # lasts ~8mn
   gcc-8-asan-ubsan-testzstd:
     runs-on: ubuntu-latest
     steps:
@@ -115,9 +115,11 @@ jobs:
     - name: gcc-8 + ASan + UBSan + Test Zstd
       # See https://askubuntu.com/a/1428822
       run: |
+        # the ASan runtime of gcc-8 loops on DEADLYSIGNAL with the 32-bit mmap ASLR of recent kernels
+        sudo sysctl -w vm.mmap_rnd_bits=28
         echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu focal main universe" | sudo tee -a /etc/apt/sources.list
         sudo apt-get -qqq update
-        make gcc8install
+        sudo apt-get -yq --no-install-suggests --no-install-recommends install libc6-dev-i386 gcc-multilib gcc-8 gcc-8-multilib
         CC=gcc-8 make -j uasan-test-zstd </dev/null V=1
 
   clang-asan-ubsan-testzstd:
@@ -126,6 +128,13 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
     - name: clang + ASan + UBSan + Test Zstd
       run: CC=clang make -j uasan-test-zstd </dev/null V=1
+
+  clang-asan-ubsan-cli-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: clang + ASan + UBSan + CLI tests
+      run: CC=clang make -j uasan-test-cli-tests
 
   gcc-asan-ubsan-testzstd-32bit:
     runs-on: ubuntu-latest
@@ -148,9 +157,11 @@ jobs:
     - name: gcc-8 + ASan + UBSan + Fuzz Test
       # See https://askubuntu.com/a/1428822
       run: |
+        # the ASan runtime of gcc-8 loops on DEADLYSIGNAL with the 32-bit mmap ASLR of recent kernels
+        sudo sysctl -w vm.mmap_rnd_bits=28
         echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu focal main universe" | sudo tee -a /etc/apt/sources.list
         sudo apt-get -qqq update
-        make gcc8install
+        sudo apt-get -yq --no-install-suggests --no-install-recommends install libc6-dev-i386 gcc-multilib gcc-8 gcc-8-multilib
         CC=gcc-8 FUZZER_FLAGS="--long-tests" make -j clean uasan-fuzztest
 
   clang-asan-ubsan-fuzz:
@@ -308,7 +319,7 @@ jobs:
         $CXX --version
         make -C tests fuzztest
 
-  # lasts ~20mn
+  # lasts ~14mn
   oss-fuzz:
     runs-on: ubuntu-latest
     strategy:
@@ -331,7 +342,7 @@ jobs:
         dry-run: false
         sanitizer: ${{ matrix.sanitizer }}
     - name: Upload Crash
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # tag=v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
       if: failure() && steps.build.outcome == 'success'
       with:
         name: ${{ matrix.sanitizer }}-artifacts

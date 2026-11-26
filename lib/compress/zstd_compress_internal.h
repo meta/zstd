@@ -141,6 +141,10 @@ MEM_STATIC ZSTD_SequenceLength ZSTD_getSequenceLength(SeqStore_t const* seqStore
 
 const SeqStore_t* ZSTD_getSeqStore(const ZSTD_CCtx* ctx);   /* compress & dictBuilder */
 int ZSTD_seqToCodes(const SeqStore_t* seqStorePtr);   /* compress, dictBuilder, decodeCorpus (shouldn't get its definition from here) */
+/* Derives the half-open sequence range [startIdx, endIdx). */
+void ZSTD_deriveSeqStoreChunk(SeqStore_t* resultSeqStore,
+                             const SeqStore_t* originalSeqStore,
+                             size_t startIdx, size_t endIdx);
 
 
 /***********************************************
@@ -465,7 +469,7 @@ typedef struct {
     SeqStore_t currSeqStore;
     SeqStore_t nextSeqStore;
 
-    U32 partitions[ZSTD_MAX_NB_BLOCK_SPLITS];
+    U32 partitions[ZSTD_MAX_NB_BLOCK_SPLITS + 1]; /* splits, followed by the end of the block */
     ZSTD_entropyCTablesMetadata_t entropyMetadata;
 } ZSTD_blockSplitCtx;
 
@@ -1541,7 +1545,7 @@ void ZSTD_reset_compressedBlockState(ZSTD_compressedBlockState_t* bs);
 
 typedef struct {
     U32 idx;            /* Index in array of ZSTD_Sequence */
-    U32 posInSequence;  /* Position within sequence at idx */
+    U64 posInSequence;  /* Position within sequence at idx. The sum of its lengths may exceed U32. */
     size_t posInSrc;    /* Number of bytes given by sequences provided so far */
 } ZSTD_SequencePosition;
 

@@ -284,6 +284,12 @@ exec_prefix ?= $(PREFIX)
 EXEC_PREFIX ?= $(exec_prefix)
 libdir      ?= $(EXEC_PREFIX)/lib
 LIBDIR      ?= $(libdir)
+ifeq (,$(filter Windows%,$(TARGET_SYSTEM)))
+shlibdir    ?= $(LIBDIR)
+else
+shlibdir    ?= $(EXEC_PREFIX)/bin
+endif
+SHLIBDIR    ?= $(shlibdir)
 includedir  ?= $(PREFIX)/include
 INCLUDEDIR  ?= $(includedir)
 
@@ -360,11 +366,16 @@ install-static:
 install-shared:
 	# only generate libzstd.so if it's not already present
 	[ -e $(LIBZSTD) ] || $(MAKE) libzstd-release
-	[ -e $(DESTDIR)$(LIBDIR) ] || $(INSTALL) -d -m 755 $(DESTDIR)$(LIBDIR)/
+	[ -e $(DESTDIR)$(SHLIBDIR) ] || $(INSTALL) -d -m 755 $(DESTDIR)$(SHLIBDIR)/
 	@echo Installing shared library
-	$(INSTALL_PROGRAM) $(LIBZSTD) $(DESTDIR)$(LIBDIR)
-	$(LN) -sf $(LIBZSTD) $(DESTDIR)$(LIBDIR)/libzstd.$(SHARED_EXT_MAJOR)
-	$(LN) -sf $(LIBZSTD) $(DESTDIR)$(LIBDIR)/libzstd.$(SHARED_EXT)
+	$(INSTALL_PROGRAM) $(LIBZSTD) $(DESTDIR)$(SHLIBDIR)
+ifeq (,$(filter Windows%,$(TARGET_SYSTEM)))
+	$(LN) -sf $(LIBZSTD) $(DESTDIR)$(SHLIBDIR)/libzstd.$(SHARED_EXT_MAJOR)
+	$(LN) -sf $(LIBZSTD) $(DESTDIR)$(SHLIBDIR)/libzstd.$(SHARED_EXT)
+else
+	[ -e $(DESTDIR)$(LIBDIR) ] || $(INSTALL) -d -m 755 $(DESTDIR)$(LIBDIR)/
+	$(INSTALL_PROGRAM) dll/libzstd.dll.a $(DESTDIR)$(LIBDIR)
+endif
 
 .PHONY: install-includes
 install-includes:
@@ -377,9 +388,10 @@ install-includes:
 .PHONY: uninstall
 uninstall:
 	$(RM) $(DESTDIR)$(LIBDIR)/libzstd.a
-	$(RM) $(DESTDIR)$(LIBDIR)/libzstd.$(SHARED_EXT)
-	$(RM) $(DESTDIR)$(LIBDIR)/libzstd.$(SHARED_EXT_MAJOR)
-	$(RM) $(DESTDIR)$(LIBDIR)/$(LIBZSTD)
+	$(RM) $(DESTDIR)$(SHLIBDIR)/libzstd.$(SHARED_EXT)
+	$(RM) $(DESTDIR)$(SHLIBDIR)/libzstd.$(SHARED_EXT_MAJOR)
+	$(RM) $(DESTDIR)$(SHLIBDIR)/$(LIBZSTD)
+	$(RM) $(DESTDIR)$(LIBDIR)/libzstd.dll.a
 	$(RM) $(DESTDIR)$(PKGCONFIGDIR)/libzstd.pc
 	$(RM) $(DESTDIR)$(INCLUDEDIR)/zstd.h
 	$(RM) $(DESTDIR)$(INCLUDEDIR)/zstd_errors.h

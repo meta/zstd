@@ -163,7 +163,7 @@ struct ZSTD_DCtx_s
 
     /* dictionary */
     ZSTD_DDict* ddictLocal;
-    const ZSTD_DDict* ddict;     /* set by ZSTD_initDStream_usingDDict(), or ZSTD_DCtx_refDDict() */
+    const ZSTD_DDict* ddict;     /* single-DDict state; NULL while ddictSet exists */
     U32 dictID;
     int ddictIsCold;             /* if == 1 : dictionary is "new" for working context, and presumed "cold" (not in cpu cache) */
     ZSTD_dictUses_e dictUses;
@@ -210,6 +210,7 @@ struct ZSTD_DCtx_s
     /* Tracing */
 #if ZSTD_TRACE
     ZSTD_TraceCtx traceCtx;
+    size_t traceDictSize;       /* size of the dictionary installed for this frame */
 #endif
 };  /* typedef'd to ZSTD_DCtx within "zstd.h" */
 
@@ -247,6 +248,8 @@ size_t ZSTD_loadDEntropy(ZSTD_entropyDTables_t* entropy,
  *  check if next `dst` follows previous position, where decompression ended.
  *  If yes, do nothing (continue on current segment).
  *  If not, classify previous segment as "external dictionary", and start a new segment.
+ *  A zero dstSize leaves history unchanged. Callers must only advance
+ *  previousDstEnd when bytes are actually produced or inserted.
  *  This function cannot fail. */
 void ZSTD_checkContinuity(ZSTD_DCtx* dctx, const void* dst, size_t dstSize);
 

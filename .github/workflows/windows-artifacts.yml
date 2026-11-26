@@ -76,7 +76,7 @@ jobs:
           cd build\cmake
           mkdir build
           cd build
-          cmake.exe -G "Visual Studio 17 2022" -A ARM64 -DCMAKE_BUILD_TYPE=Release -DZSTD_BUILD_PROGRAMS=ON -DZSTD_BUILD_SHARED=ON -DZSTD_BUILD_STATIC=ON ..
+          cmake.exe -G "Visual Studio 18 2026" -A ARM64 -DCMAKE_BUILD_TYPE=Release -DZSTD_BUILD_PROGRAMS=ON -DZSTD_BUILD_SHARED=ON -DZSTD_BUILD_STATIC=ON ..
           cmake.exe --build . --config Release --parallel
 
       - name: Create artifacts (MSYS2)
@@ -84,6 +84,22 @@ jobs:
         run: |
           ./lib/dll/example/build_package.bat || exit 1
           mv bin/ zstd-${{ github.ref_name }}-${{matrix.ziparch}}/
+
+      - name: Check packaged DLL import library (MSYS2)
+        if: matrix.shell == 'msys2'
+        run: test -f zstd-${{ github.ref_name }}-${{ matrix.ziparch }}/dll/libzstd.lib
+
+      - name: Add MSBuild to PATH
+        if: matrix.shell == 'msys2'
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # tag=v3.0.0
+
+      - name: Build packaged Visual Studio example (MSYS2)
+        if: matrix.shell == 'msys2'
+        shell: pwsh
+        run: |
+          # Build a copy outside the checkout: keeps the artifact clean and repo headers out of reach.
+          Copy-Item -Recurse zstd-${{ github.ref_name }}-${{ matrix.ziparch }} $env:RUNNER_TEMP\pkg
+          msbuild $env:RUNNER_TEMP\pkg\example\fullbench-dll.sln /p:Configuration=Release /p:Platform=${{ matrix.env == 'i686' && 'Win32' || 'x64' }} /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
 
       - name: Create artifacts (CMake)
         if: matrix.shell == 'cmake'
@@ -93,7 +109,7 @@ jobs:
           mv bin/ zstd-${{ github.ref_name }}-${{matrix.ziparch}}/
 
       - name: Publish zstd-$VERSION-${{matrix.ziparch}}.zip for manual inspection
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # tag=v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
         with:
           compression-level: 9  # maximum compression
           if-no-files-found: error # defaults to `warn`

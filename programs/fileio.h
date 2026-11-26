@@ -151,9 +151,11 @@ int FIO_decompressMultipleFilenames(FIO_ctx_t* const fCtx,
                                     const char* dictFileName);
 
 /* FIO_checkFilenameCollisions() :
- * Checks for and warns if there are any files that would have the same output path
+ * Checks for files that would have the same output path.
+ * NULL entries in filenameTable are ignored.
+ * Returns non-zero if there is any collision.
  */
-int FIO_checkFilenameCollisions(const char** filenameTable, unsigned nbFiles);
+int FIO_checkFilenameCollisions(const char* const* filenameTable, unsigned nbFiles);
 
 
 

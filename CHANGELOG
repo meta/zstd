@@ -1,6 +1,64 @@
-v1.6.0 (Dec 2025)
-api: legacy format support is now disabled by default
-build: `ZSTD_LEGACY_SUPPORT` defaults to `0` in Makefile and CMake
+v1.6.0 (Nov 2026)
+fix: streaming decompression of malformed data could expose uninitialized memory (#5023)
+fix: multithreaded compression with `ZSTD_CCtx_refPrefix()` could rarely emit a valid frame encoding wrong data, depending on thread timing (#5012)
+fix: out-of-bounds read and write in the DDict hash table when using `ZSTD_d_refMultipleDDicts` (#4731)
+fix: use-after-free of a `ZSTD_DCtx_refPrefix()` prefix after `ZSTD_DCtx_reset()` following a malformed frame header (#4848)
+fix: out-of-bounds read with `ZSTD_c_stableInBuffer` after an abandoned frame or a changed input buffer, reported by @IlyaGrebnov (#4943)
+fix: multithreaded compression use-after-free when freeing or resetting a context during an abandoned frame (#4871)
+fix: multithreaded streaming compression accepted a wrong pledged source size, producing corrupted frames (#4931)
+fix: prepared dictionary decompression now rejects matches into formatted dictionary headers (#4991)
+fix: on a static DCtx, `ZSTD_DCtx_loadDictionary()` and `ZSTD_DCtx_refPrefix()` return `ZSTD_error_memory_allocation` for nonempty dictionaries (#4914)
+fix: wild reads when compressing with large dictionaries whose repcodes point into discarded content (#4915)
+fix: memory corruption in `ZSTD_compressSequences()` and `ZSTD_compressSequencesAndLiterals()` with small `dst`, overflowing lengths, or some invalid sequences (#4918, #4989, #5004)
+fix: out-of-bounds write with `ZSTD_c_targetCBlockSize` and `ZSTD_compress2()` into a `dst` smaller than `ZSTD_compressBound()` (#4981)
+fix: high compression levels read uninitialized statistics with some dictionaries (#4978)
+fix: 32-bit multithreaded compression with large windows (#4946, #4948)
+fix: 32-bit builds rejected valid dictionary IDs above 4294967176 (#4976)
+fix: excessive memory usage with long distance matching and small windows (#4626)
+fix: CDict and DDict creation and size estimation reject dictionary sizes that overflow (#4912)
+fix: crash when a custom allocator fails (#4613), data race when resizing a thread pool (#4601)
+fix: legacy decoders: out-of-bounds reads, wrong streaming output, and offset validation (#4555, #4815, #4816, #4817, #4913, #4955, #4957)
+api: legacy format support is now disabled by default (#4554)
+api: experimental `ZSTD_d_refMultipleDDicts` requires an exact dictionary ID match: a missing nonzero ID returns `ZSTD_error_dictionary_wrong` instead of falling back to the current dictionary (#4929)
+api: disabling experimental `ZSTD_d_refMultipleDDicts` releases every dictionary reference of its set (#4929)
+api: removed the deprecated experimental functions `ZSTD_copyCCtx()` and `ZSTD_copyDCtx()` (#4960)
+api: promoted `ZSTD_getFrameHeader()` and `ZSTD_FrameHeader` to the stable API (#2471)
+api: promoted `ZSTD_createDDict_byReference()`, `ZSTD_DCtx_loadDictionary_advanced()`, and `ZSTD_CCtx_loadDictionary_advanced()` to the stable API, along with `ZSTD_dictContentType_e` and `ZSTD_dictLoadMethod_e` (#4283, #3723)
+api: `ZSTD_decompressDCtx()`, `ZSTD_decompress_usingDict()` and `ZSTD_decompress_usingDDict()` reset an unfinished streaming session, as documented (#4975)
+api: `ZSTD_DCtx_loadDictionary()` returns `ZSTD_error_dictionary_corrupted` for a corrupted dictionary, instead of `ZSTD_error_memory_allocation` (#4925)
+api: `ZSTD_compressSequencesAndLiterals()` enforces its documented limits on block size and `litBufCapacity` (#4741, #4782)
+api: `ZSTD_decompressContinue()` returns `ZSTD_error_stage_wrong` when not preceded by `ZSTD_decompressBegin()` (#4937)
+api: new experimental `ZSTD_isDeterministicBuild()` (#4331)
+perf: faster decompression on AArch64 (#4413, #4414, #4418, #4509), by @arpadpanyik-arm
+perf: faster compression on AArch64 with SVE2 (#4411), by @arpadpanyik-arm
+perf: faster `ZSTD_compressSequencesAndLiterals()` on AArch64 with Neon and SVE2 (#4429, #4440), by @arpadpanyik-arm, and on RISC-V with RVV (#4399), by @zijianli1234
+perf: faster row match finder on RISC-V with RVV (#4481), by @w1m024
+cli: new `--patch-apply` command, equivalent to `-d --patch-from` (#4350)
+cli: `-B#` renamed `--jobsize=#`, and benchmark `--blocksize=#` renamed `--split=#`; old names remain supported (#4329)
+cli: `--filelist=` supports process substitution (#4349)
+cli: size arguments accept `G`, `GB` and `GiB` suffixes (#4609), by @Integral-Tech
+cli: `--memory=` also limits `.xz` and `.lzma` decompression (#4903)
+cli: benchmark mode uses 1 thread by default (#4475)
+cli: warn when multiple threads are requested for decompression (#4335)
+cli: safer file handling: no output through symbolic links (#4906), `-r` no longer follows links and junctions on Windows (#4905), better same-file detection on Windows (#4884), robust to concurrent renames (#4962, #4999, #5003, #5009)
+cli: `--output-dir-flat` fails on output filename collisions before processing (#4974), by @daniellerozenblit
+cli: fix `zstd -l` infinite loop on a large skippable frame (#4833)
+cli: fix `--memlimit-decompress=` parsing (#4916), `--adapt` bounds (#4982), `--patch-from` with an empty file (#4896), `--check` with `--format=lz4` (#5011)
+cli: fix `ZSTD_NBTHREADS=0` (#4334), 
+cli: fix decode-only benchmark of multiple files (#4714, #4945)
+cli: `zstdgrep` exits 0 when any of several files matches (#4967)
+zdict: fix out-of-bounds reads with small training sets (#4690, #4710, #4922), and COVER results no longer depend on memory addresses (#4765)
+contrib: seekable_format: fix out-of-bounds reads, infinite loops and error recovery on malformed seek tables (#4712, #4717, #4902, #4941, #4942, #4958)
+contrib: zlibWrapper: no longer writes an empty gzip member after `Z_FINISH` (#4818)
+build: `ZSTD_LEGACY_SUPPORT` defaults to `0` in all build systems (#4554, #4781)
+build: root `CMakeLists.txt` wrapper (#4491)
+build: cmake: C++ only required for tests (#4357), ASM only enabled when needed (#4504), separate export groups (#4494), static API visibility applied to the shared library (#4789), Android build (#4447)
+build: fix cmake with clang-cl (#4810, #4972), 
+build: fix meson on Windows (#4322), duplicate `LC_RPATH` on macOS 15.4+ (#4371), Swift module map (#4531), musl (#4336), OpenBSD and NetBSD (#4463)
+build: meson calls `meson.override_dependency()` (#4472), by @bgilbert
+build: Windows release binaries support lz4 (#4327), and new Windows ARM64 binaries (#4465)
+portability: RISC-V 64-bit detection (#4525)
+doc: clarified `Block_Maximum_Size` in the format specification
 
 V1.5.7 (Feb 2025)
 fix: compression bug in 32-bit mode associated with long-lasting sessions

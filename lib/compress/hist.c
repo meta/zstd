@@ -72,6 +72,9 @@ unsigned HIST_count_simple(unsigned* count, unsigned* maxSymbolValuePtr,
 typedef enum { trustInput, checkMaxSymbolValue } HIST_checkInput_e;
 
 #if defined(ZSTD_ARCH_ARM_SVE2)
+/* U16 counters must hold even an all-identical chunk. Round the limit down
+ * to 16 bytes so zero-padding the final vector cannot overflow them. */
+#define HIST_SVE2_MAX_CHUNK_SIZE ((1U << 16) - 16)
 FORCE_INLINE_TEMPLATE size_t min_size(size_t a, size_t b) { return a < b ? a : b; }
 
 static
@@ -174,14 +177,15 @@ svuint16_t HIST_count_6_sve2(const BYTE* const src, size_t size, U32* const dst,
     return svmax_u16_x(vl128, hh0, hh8);
 }
 
-static size_t HIST_count_sve2(unsigned* count, unsigned* maxSymbolValuePtr,
-                              const void* source, size_t sourceSize,
-                              HIST_checkInput_e check)
+static size_t HIST_count_sve2_chunk(unsigned* count, unsigned* maxSymbolValuePtr,
+                                   const void* source, size_t sourceSize,
+                                   HIST_checkInput_e check)
 {
     const BYTE* ip = (const BYTE*)source;
     const size_t maxCount = *maxSymbolValuePtr + 1;
 
     assert(*maxSymbolValuePtr <= 255);
+    assert(sourceSize <= HIST_SVE2_MAX_CHUNK_SIZE);
     if (!sourceSize) {
         ZSTD_memset(count, 0, maxCount * sizeof(*count));
         *maxSymbolValuePtr = 0;
@@ -305,6 +309,44 @@ static size_t HIST_count_sve2(unsigned* count, unsigned* maxSymbolValuePtr,
         }
 
         return svmaxv_u16(vl128, max);
+    }
+}
+
+static size_t HIST_count_sve2(unsigned* count, unsigned* maxSymbolValuePtr,
+                              const void* source, size_t sourceSize,
+                              HIST_checkInput_e check)
+{
+    if (sourceSize <= HIST_SVE2_MAX_CHUNK_SIZE)
+        return HIST_count_sve2_chunk(count, maxSymbolValuePtr, source, sourceSize, check);
+
+    {   const BYTE* const input = (const BYTE*)source;
+        unsigned const maxSymbolLimit = *maxSymbolValuePtr;
+        unsigned maxSymbolValue = maxSymbolLimit;
+        U32 chunkCounts[256];
+        size_t largestCount = HIST_count_sve2_chunk(count, &maxSymbolValue, input,
+                                                   HIST_SVE2_MAX_CHUNK_SIZE, check);
+        size_t offset = HIST_SVE2_MAX_CHUNK_SIZE;
+        if (HIST_isError(largestCount)) return largestCount;
+
+        /* Merge each bounded histogram into U32 totals. Wrapping a present
+         * symbol to zero breaks Huffman coding, and undercounting breaks RLE. */
+        while (offset < sourceSize) {
+            size_t const chunkSize = min_size(sourceSize - offset, HIST_SVE2_MAX_CHUNK_SIZE);
+            unsigned chunkMaxSymbol = maxSymbolLimit;
+            size_t const result = HIST_count_sve2_chunk(chunkCounts, &chunkMaxSymbol,
+                                                        input + offset, chunkSize, check);
+            unsigned symbol;
+            if (HIST_isError(result)) return result;
+            if (chunkMaxSymbol > maxSymbolValue) maxSymbolValue = chunkMaxSymbol;
+            for (symbol = 0; symbol <= chunkMaxSymbol; ++symbol) {
+                count[symbol] += chunkCounts[symbol];
+                if (count[symbol] > largestCount) largestCount = count[symbol];
+            }
+            offset += chunkSize;
+        }
+
+        *maxSymbolValuePtr = maxSymbolValue;
+        return largestCount;
     }
 }
 #endif

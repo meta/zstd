@@ -1,0 +1,17 @@
++ zstd -f --rm --output-dir-flat out d1/x d2/x
+zstd: x: multiple input files map to the same output file name
+zstd: no files were processed; --output-dir-mirror can preserve the input directory structure
++ zstd -f --output-dir-flat out d1/x d2/x
+zstd: x: multiple input files map to the same output file name
+zstd: no files were processed; --output-dir-mirror can preserve the input directory structure
++ zstd -d -f --rm --output-dir-flat dout dz1/x.zst dz2/x.zst
+zstd: x: multiple input files map to the same output file name
+zstd: no files were processed; --output-dir-mirror can preserve the input directory structure
++ zstd -d -f --output-dir-flat dout dz1/x.zst dz2/x.zst
+zstd: x: multiple input files map to the same output file name
+zstd: no files were processed; --output-dir-mirror can preserve the input directory structure
++ zstd -d -f --rm --output-dir-flat dtout dt1/a.tar.zst dt2/a.tzst
+zstd: a.tar: multiple input files map to the same output file name
+zstd: no files were processed; --output-dir-mirror can preserve the input directory structure
++ zstd --exclude-compressed --output-dir-flat deout de1/x.zst de2/x.zst de1/y
+...

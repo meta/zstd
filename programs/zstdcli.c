@@ -225,6 +225,7 @@ static void usageAdvanced(const char* programName)
     DISPLAYOUT("\n");
     DISPLAYOUT("Advanced compression options:\n");
     DISPLAYOUT("  --ultra                       Enable levels beyond %i, up to %i; requires more memory.\n", ZSTDCLI_CLEVEL_MAX, ZSTD_maxCLevel());
+    DISPLAYOUT("  --max                         Enable the maximum compression settings.\n");
     DISPLAYOUT("  --fast[=#]                    Use to very fast compression levels. [Default: %u]\n", 1);
 #ifdef ZSTD_GZCOMPRESS
     if (exeNameMatch(programName, ZSTD_GZ)) {     /* behave like gzip */
@@ -413,6 +414,7 @@ static int readIntFromChar(const char** stringPtr) {
         sign = -1;
     }
     if (readU32FromCharChecked(stringPtr, &result)) { errorOut(errorMsg); }
+    if (result > (unsigned)INT_MAX) { errorOut(errorMsg); }
     return (int) result * sign;
 }
 
@@ -606,6 +608,15 @@ static ZDICT_fastCover_params_t defaultFastCoverParams(void)
 #endif
 
 
+#ifdef ZSTD_NOCOMPRESS
+/* symbols from compression library are not defined and should not be invoked */
+# define MINCLEVEL  -99
+# define MAXCLEVEL   22
+#else
+# define MINCLEVEL  ZSTD_minCLevel()
+# define MAXCLEVEL  ZSTD_maxCLevel()
+#endif
+
 /** parseAdaptParameters() :
  *  reads adapt parameters from *stringPtr (e.g. "--adapt=min=1,max=19) and store them into adaptMinPtr and adaptMaxPtr.
  *  Both adaptMinPtr and adaptMaxPtr must be already allocated and correctly initialized.
@@ -622,6 +633,12 @@ static unsigned parseAdaptParameters(const char* stringPtr, int* adaptMinPtr, in
         return 0;
     }
     if (stringPtr[0] != 0) return 0; /* check the end of string */
+    /* clamp to the supported range of levels, as `-#` and `--fast=#` do,
+     * before comparing the bounds, so that one bound alone is clamped too */
+    if (*adaptMinPtr < MINCLEVEL) *adaptMinPtr = MINCLEVEL;
+    if (*adaptMinPtr > MAXCLEVEL) *adaptMinPtr = MAXCLEVEL;
+    if (*adaptMaxPtr < MINCLEVEL) *adaptMaxPtr = MINCLEVEL;
+    if (*adaptMaxPtr > MAXCLEVEL) *adaptMaxPtr = MAXCLEVEL;
     if (*adaptMinPtr > *adaptMaxPtr) {
         DISPLAYLEVEL(4, "incoherent adaptation limits \n");
         return 0;
@@ -863,15 +880,6 @@ typedef enum { zom_compress, zom_decompress, zom_test, zom_bench, zom_train, zom
 
 #define CLEAN_RETURN(i) { operationResult = (i); goto _end; }
 
-#ifdef ZSTD_NOCOMPRESS
-/* symbols from compression library are not defined and should not be invoked */
-# define MINCLEVEL  -99
-# define MAXCLEVEL   22
-#else
-# define MINCLEVEL  ZSTD_minCLevel()
-# define MAXCLEVEL  ZSTD_maxCLevel()
-#endif
-
 int main(int argCount, const char* argv[])
 {
     int argNb,
@@ -977,14 +985,14 @@ int main(int argCount, const char* argv[])
         const char* const originalArgument = argument;
         if (!argument) continue;   /* Protection if argument empty */
 
-        if (nextArgumentsAreFiles) {
-            UTIL_refFilename(filenames, argument);
+        /* "-" means stdin/stdout, even after "--" */
+        if (!strcmp(argument, "-")){
+            UTIL_refFilename(filenames, stdinmark);
             continue;
         }
 
-        /* "-" means stdin/stdout */
-        if (!strcmp(argument, "-")){
-            UTIL_refFilename(filenames, stdinmark);
+        if (nextArgumentsAreFiles) {
+            UTIL_refFilename(filenames, argument);
             continue;
         }
 
@@ -1102,9 +1110,9 @@ int main(int argCount, const char* argv[])
                 }
 #endif
                 if (longCommandWArg(&argument, "--threads")) { NEXT_UINT32(nbWorkers); setThreads_non1 = (nbWorkers != 1); continue; }
+                if (longCommandWArg(&argument, "--memlimit-decompress")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memlimit")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memory")) { NEXT_UINT32(memLimit); continue; }
-                if (longCommandWArg(&argument, "--memlimit-decompress")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--block-size")) { NEXT_TSIZE(chunkSize); continue; } /* hidden command, prefer --split below */
                 if (longCommandWArg(&argument, "--split")) { NEXT_TSIZE(chunkSize); continue; }
                 if (longCommandWArg(&argument, "--jobsize")) { NEXT_TSIZE(chunkSize); continue; } /* note: overloaded variable */
@@ -1668,6 +1676,8 @@ int main(int argCount, const char* argv[])
         (void)ultra; (void)cLevel; (void)ldmFlag; (void)literalCompressionMode;
         (void)targetCBlockSize; (void)streamSrcSize; (void)srcSizeHint;
         (void)ZSTD_strategyMap; (void)useRowMatchFinder; (void)cType;
+        (void)g_overlapLog; (void)g_ldmHashLog; (void)g_ldmMinMatch;
+        (void)g_ldmHashRateLog; (void)g_ldmBucketSizeLog;
         DISPLAYLEVEL(1, "Compression not supported \n");
 #endif
     } else {  /* decompression or test */

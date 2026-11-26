@@ -18,6 +18,41 @@ This document lists a few known cases where invalid data was formerly accepted
 by the decoder, and what has changed since.
 
 
+Matches into a formatted dictionary header
+------------------------------------------
+
+**Last affected version**: v1.5.7
+
+**Produced by the reference compressor**: Yes, by the multithreaded compressor in v1.3.2 through v1.4.4, when using `ZSTD_CCtx_refPrefix_advanced()` with a formatted dictionary.
+
+**Example Dictionary**: `37a4 30ec 0100 0000 8010 f003 f003 f003 0400 0000 0400 0000 0400 0000 4141 4141 4141 4141 4141 4141 4141 4141`
+
+**Example Frame**: `28b5 2ffd 0300 0100 0000 3d00 0000 0154 0005 012f`
+
+A formatted dictionary contains a header with its magic number, dictionary ID,
+entropy tables, and initial repeated offsets. Only the content following this
+header is available as match history.
+
+The multithreaded compressor in v1.3.2 through v1.4.4 could treat a formatted
+dictionary supplied through `ZSTD_CCtx_refPrefix_advanced()` as raw content,
+allowing matches into its header. This bug affected formatted prefixes, not
+caller-supplied formatted `ZSTD_CDict` objects or `ZSTD_CCtx_loadDictionary()`.
+It was fixed in v1.4.5.
+
+The reference decompressor up to v1.5.7 includes the header in the matchable
+history when using a prepared dictionary (`ZSTD_DDict`), including dictionaries
+prepared internally by the context and streaming APIs. The example dictionary
+has a 28-byte header and 16 bytes of content. The example frame requests a
+four-byte match at offset 44, which returns the dictionary magic instead of
+reporting corruption. The direct `ZSTD_decompress_usingDict()` API already
+rejects this frame.
+
+In newer versions, all decompression APIs exclude the formatted dictionary
+header from match history and report a corruption error for such offsets.
+Explicitly raw-content dictionaries still expose their entire contents as
+match history, even when those bytes start with the dictionary magic.
+
+
 Truncated Huffman states
 ------------------------
 
