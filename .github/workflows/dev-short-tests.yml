@@ -534,6 +534,20 @@ jobs:
         echo "Testing $CC ${{ matrix.msystem }}"
         make clean
         MSYS="" make check
+    - name: make install
+      run: |
+        export CC=${{ matrix.compiler }}
+        make -j install DESTDIR="$PWD/stage" PREFIX=/usr
+        cd stage/usr
+        find . -type f | sort
+        # MinGW layout: the DLL in bin/, its import library in lib/
+        test -f bin/zstd.exe
+        test -f bin/libzstd.dll
+        test -f lib/libzstd.dll.a
+        test -f lib/libzstd.a
+        test -f lib/pkgconfig/libzstd.pc
+        test -f include/zstd.h
+        test ! -e lib/libzstd.dll
 
   visual-runtime-tests:
     runs-on: windows-latest
