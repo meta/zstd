@@ -1944,6 +1944,49 @@ static unsigned test_get1BlockSummary(unsigned testNb)
     }
     DISPLAYLEVEL(3, "OK \n");
 
+    DISPLAYLEVEL(3, "test%3u : ZSTD_get1BlockSummary rejects invalid zero offset / bad delimiter : ", testNb++);
+    {
+        static const ZSTD_Sequence badDelim[] = { { 1, 2, 4, 0 }, { 7, 3, 0, 0 } };
+        static const ZSTD_Sequence zeroOff[]  = { { 0, 2, 4, 0 }, { 0, 0, 0, 0 } };
+        static const ZSTD_Sequence zeroOffUnrolled[] = {
+            { 1, 1, 3, 0 }, { 1, 1, 3, 0 }, { 0, 1, 3, 0 }, { 1, 1, 3, 0 }, { 0, 0, 0, 0 }
+        };
+        CHECK_EQ(ZSTD_get1BlockSummary(badDelim, 2).nbSequences, ERROR(externalSequences_invalid));
+        CHECK_EQ(ZSTD_get1BlockSummary(zeroOff, 2).nbSequences, ERROR(externalSequences_invalid));
+        CHECK_EQ(ZSTD_get1BlockSummary(zeroOffUnrolled, 5).nbSequences, ERROR(externalSequences_invalid));
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+    DISPLAYLEVEL(3, "test%3u : ZSTD_get1BlockSummary avoids 32-bit wraparound : ", testNb++);
+    {
+        static const ZSTD_Sequence litWrap[] = {
+            { 1, 0x80000000U, 3, 0 },
+            { 1, 0x80000000U, 4, 0 },
+            { 0, 0, 0, 0 }
+        };
+        static const ZSTD_Sequence matchWrap4[] = {
+            { 1, 1, 0x40000000U, 0 },
+            { 1, 2, 0x40000000U, 0 },
+            { 1, 3, 0x40000000U, 0 },
+            { 1, 4, 0x40000000U, 0 },
+            { 0, 0, 0, 0 }
+        };
+        BlockSummary const bsLit = ZSTD_get1BlockSummary(litWrap, 3);
+        BlockSummary const bsMatch = ZSTD_get1BlockSummary(matchWrap4, 5);
+        if (sizeof(size_t) >= 8) {
+            CHECK_EQ(bsLit.nbSequences, 3);
+            CHECK_EQ(bsLit.litSize, (size_t)0x100000000ULL);
+            CHECK_EQ(bsLit.blockSize, (size_t)0x100000007ULL);
+            CHECK_EQ(bsMatch.nbSequences, 5);
+            CHECK_EQ(bsMatch.litSize, 10);
+            CHECK_EQ(bsMatch.blockSize, (size_t)0x10000000AULL);
+        } else {
+            CHECK(ZSTD_isError(bsLit.nbSequences));
+            CHECK(ZSTD_isError(bsMatch.nbSequences));
+        }
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     assert(COUNTOF(nseqs) > COUNTOF(blocks));
     for (i = 0; i < COUNTOF(blocks); ++i) {
         BlockSummary bs;
@@ -7640,6 +7683,59 @@ static int basicUnitTests(U32 const seed, double compressibility)
         CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_explicitBlockDelimiters) );
         CHECK( ZSTD_isError(ZSTD_compressSequencesAndLiterals(cctx, compressedBuffer, compressedBufferSize,
                                 seqs, 2, CNBuffer, 16, CNBuffSize, ZSTD_BLOCKSIZE_MAX + 1)) );
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+    DISPLAYLEVEL(3, "test%3i : ZSTD_compressSequencesAndLiterals : reject wrapped sums, invalid sequences, and underflow : ", testNb++);
+    {   ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+        int repMode;
+        CHECK(cctx != NULL);
+        for (repMode = ZSTD_ps_enable; repMode <= ZSTD_ps_disable; repMode++) {
+            /* 32-bit litLength sum wraps to 0 unless 64-bit accumulators are used */
+            ZSTD_Sequence const wrapSeqs[3] = {
+                { 1, 0x80000000U, 3, 0 },
+                { 1, 0x80000000U, 4, 0 },
+                { 0, 0, 0, 0 }
+            };
+            /* offset == 0 in non-delimiter */
+            ZSTD_Sequence const zeroOffSeqs[2] = { { 0, 4, 4, 0 }, { 0, 0, 0, 0 } };
+            /* matchLength < MINMATCH in non-delimiter */
+            ZSTD_Sequence const shortMatchSeqs[2] = { { 1, 4, 2, 0 }, { 0, 0, 0, 0 } };
+            /* blockSize exceeds srcSize (remaining underflow) */
+            ZSTD_Sequence const overSrcSeqs[2] = { { 1, 4, 4, 0 }, { 0, 0, 0, 0 } };
+            /* non-empty invalid single delimiter on srcSize==0 */
+            ZSTD_Sequence const badEmptySeqs[1] = { { 5, 0, 0, 0 } };
+
+            CHECK_Z( ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters) );
+            CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_explicitBlockDelimiters) );
+            CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_searchForExternalRepcodes, repMode) );
+
+            CHECK( ZSTD_isError(ZSTD_compressSequencesAndLiterals(cctx, compressedBuffer, compressedBufferSize,
+                                    wrapSeqs, 3, CNBuffer, 0, CNBuffSize, 7)) );
+            CHECK( ZSTD_isError(ZSTD_compressSequencesAndLiterals(cctx, compressedBuffer, compressedBufferSize,
+                                    zeroOffSeqs, 2, CNBuffer, 4, CNBuffSize, 8)) );
+            CHECK( ZSTD_isError(ZSTD_compressSequencesAndLiterals(cctx, compressedBuffer, compressedBufferSize,
+                                    shortMatchSeqs, 2, CNBuffer, 4, CNBuffSize, 6)) );
+            CHECK( ZSTD_isError(ZSTD_compressSequencesAndLiterals(cctx, compressedBuffer, compressedBufferSize,
+                                    overSrcSeqs, 2, CNBuffer, 4, CNBuffSize, 4)) );
+            CHECK( ZSTD_isError(ZSTD_compressSequencesAndLiterals(cctx, compressedBuffer, compressedBufferSize,
+                                    badEmptySeqs, 1, CNBuffer, 0, CNBuffSize, 0)) );
+        }
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+    DISPLAYLEVEL(3, "test%3i : ZSTD_compressSequencesAndLiterals : empty frame roundtrip : ", testNb++);
+    {   ZSTD_Sequence const emptySeqs[1] = { { 0, 0, 0, 0 } };
+        ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+        size_t cEmptySize, dEmptySize;
+        CHECK(cctx != NULL);
+        CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_explicitBlockDelimiters) );
+        CHECK_Z( cEmptySize = ZSTD_compressSequencesAndLiterals(cctx, compressedBuffer, compressedBufferSize,
+                                emptySeqs, 1, CNBuffer, 0, CNBuffSize, 0) );
+        CHECK_Z( dEmptySize = ZSTD_decompress(decodedBuffer, CNBuffSize, compressedBuffer, cEmptySize) );
+        CHECK_EQ(dEmptySize, 0);
         ZSTD_freeCCtx(cctx);
     }
     DISPLAYLEVEL(3, "OK \n");

@@ -7750,26 +7750,34 @@ size_t ZSTD_convertBlockSequences(ZSTD_CCtx* cctx,
     ZSTD_memcpy(updatedRepcodes.rep, cctx->blockState.prevCBlock->rep, sizeof(Repcodes_t));
 
     /* check end condition */
-    assert(nbSequences >= 1);
-    assert(inSeqs[nbSequences-1].matchLength == 0);
-    assert(inSeqs[nbSequences-1].offset == 0);
+    RETURN_ERROR_IF(nbSequences == 0
+                    || inSeqs[nbSequences-1].matchLength != 0
+                    || inSeqs[nbSequences-1].offset != 0,
+                    externalSequences_invalid,
+                    "Block sequences must end with a valid end-of-block delimiter");
 
     /* Convert Sequences from public format to internal format */
     if (!repcodeResolution) {
-        size_t const longl = convertSequences_noRepcodes(cctx->seqStore.sequencesStart, inSeqs, nbSequences-1);
-        cctx->seqStore.sequences = cctx->seqStore.sequencesStart + nbSequences-1;
-        if (longl) {
-            DEBUGLOG(5, "long length");
-            assert(cctx->seqStore.longLengthType == ZSTD_llt_none);
-            if (longl <= nbSequences-1) {
-                DEBUGLOG(5, "long match length detected at pos %zu", longl-1);
-                cctx->seqStore.longLengthType = ZSTD_llt_matchLength;
-                cctx->seqStore.longLengthPos = (U32)(longl-1);
-            } else {
-                DEBUGLOG(5, "long literals length detected at pos %zu", longl-nbSequences);
-                assert(longl <= 2* (nbSequences-1));
-                cctx->seqStore.longLengthType = ZSTD_llt_literalLength;
-                cctx->seqStore.longLengthPos = (U32)(longl-(nbSequences-1)-1);
+        for (seqNb = 0; seqNb < nbSequences - 1; seqNb++) {
+            RETURN_ERROR_IF(inSeqs[seqNb].offset == 0 || inSeqs[seqNb].matchLength < MINMATCH,
+                            externalSequences_invalid,
+                            "Invalid sequence offset or matchLength");
+        }
+        {   size_t const longl = convertSequences_noRepcodes(cctx->seqStore.sequencesStart, inSeqs, nbSequences-1);
+            cctx->seqStore.sequences = cctx->seqStore.sequencesStart + nbSequences-1;
+            if (longl) {
+                DEBUGLOG(5, "long length");
+                assert(cctx->seqStore.longLengthType == ZSTD_llt_none);
+                if (longl <= nbSequences-1) {
+                    DEBUGLOG(5, "long match length detected at pos %zu", longl-1);
+                    cctx->seqStore.longLengthType = ZSTD_llt_matchLength;
+                    cctx->seqStore.longLengthPos = (U32)(longl-1);
+                } else {
+                    DEBUGLOG(5, "long literals length detected at pos %zu", longl-nbSequences);
+                    assert(longl <= 2* (nbSequences-1));
+                    cctx->seqStore.longLengthType = ZSTD_llt_literalLength;
+                    cctx->seqStore.longLengthPos = (U32)(longl-(nbSequences-1)-1);
+                }
             }
         }
     } else {
@@ -7777,7 +7785,11 @@ size_t ZSTD_convertBlockSequences(ZSTD_CCtx* cctx,
             U32 const litLength = inSeqs[seqNb].litLength;
             U32 const matchLength = inSeqs[seqNb].matchLength;
             U32 const ll0 = (litLength == 0);
-            U32 const offBase = ZSTD_finalizeOffBase(inSeqs[seqNb].offset, updatedRepcodes.rep, ll0);
+            U32 offBase;
+            RETURN_ERROR_IF(inSeqs[seqNb].offset == 0 || matchLength < MINMATCH,
+                            externalSequences_invalid,
+                            "Invalid sequence offset or matchLength");
+            offBase = ZSTD_finalizeOffBase(inSeqs[seqNb].offset, updatedRepcodes.rep, ll0);
 
             DEBUGLOG(6, "Storing sequence: (of: %u, ml: %u, ll: %u)", offBase, matchLength, litLength);
             ZSTD_storeSeqOnly(&cctx->seqStore, litLength, offBase, matchLength);
@@ -7817,48 +7829,62 @@ BlockSummary ZSTD_get1BlockSummary(const ZSTD_Sequence* seqs, size_t nbSeqs)
 {
     size_t i;
     __m256i const zeroVec = _mm256_setzero_si256();
-    __m256i sumVec = zeroVec;  /* accumulates match+lit in 32-bit lanes */
-    ZSTD_ALIGNED(32) U32 tmp[8];      /* temporary buffer for reduction */
-    size_t mSum = 0, lSum = 0;
+    __m256i const zeroHi32Mask = _mm256_set1_epi64x(0x00000000FFFFFFFFULL);
+    __m256i litSumVec = zeroVec;   /* accumulates litLength in 64-bit lanes [0],[2] */
+    __m256i matchSumVec = zeroVec; /* accumulates matchLength in 64-bit lanes [1],[3] */
+    ZSTD_ALIGNED(32) U64 litTmp[4];
+    ZSTD_ALIGNED(32) U64 matchTmp[4];
+    U64 mSum64 = 0, lSum64 = 0;
     ZSTD_STATIC_ASSERT(sizeof(ZSTD_Sequence) == 16);
+    ZSTD_STATIC_ASSERT(offsetof(ZSTD_Sequence, offset) == 0);
+    ZSTD_STATIC_ASSERT(offsetof(ZSTD_Sequence, litLength) == 4);
+    ZSTD_STATIC_ASSERT(offsetof(ZSTD_Sequence, matchLength) == 8);
 
     /* Process 2 structs (32 bytes) at a time */
     for (i = 0; i + 2 <= nbSeqs; i += 2) {
-        /* Load two consecutive ZSTD_Sequence (8×4 = 32 bytes) */
-        __m256i data     = _mm256_loadu_si256((const __m256i*)(const void*)&seqs[i]);
-        /* check end of block signal */
-        __m256i cmp      = _mm256_cmpeq_epi32(data, zeroVec);
-        int cmp_res      = _mm256_movemask_epi8(cmp);
-        /* indices for match lengths correspond to bits [8..11], [24..27]
-         * => combined mask = 0x0F000F00 */
-        ZSTD_STATIC_ASSERT(offsetof(ZSTD_Sequence, matchLength) == 8);
-        if (cmp_res & 0x0F000F00) break;
-        /* Accumulate in sumVec */
-        sumVec           = _mm256_add_epi32(sumVec, data);
+        /* Load two consecutive ZSTD_Sequence (8x4 = 32 bytes) */
+        __m256i const data = _mm256_loadu_si256((const __m256i*)(const void*)&seqs[i]);
+        /* check end of block signal or invalid zero offset */
+        __m256i const cmp  = _mm256_cmpeq_epi32(data, zeroVec);
+        int const cmp_res  = _mm256_movemask_epi8(cmp);
+        /* indices for offset and matchLength correspond to bits
+         * [0..3], [8..11], [16..19], [24..27] => combined mask = 0x0F0F0F0F */
+        if (cmp_res & 0x0F0F0F0F) break;
+        /* Accumulate widened 64-bit sums to prevent 32-bit overflow */
+        litSumVec   = _mm256_add_epi64(litSumVec, _mm256_srli_epi64(data, 32));
+        matchSumVec = _mm256_add_epi64(matchSumVec, _mm256_and_si256(data, zeroHi32Mask));
     }
 
     /* Horizontal reduction */
-    _mm256_store_si256((__m256i*)tmp, sumVec);
-    lSum = tmp[1] + tmp[5];
-    mSum = tmp[2] + tmp[6];
+    _mm256_store_si256((__m256i*)litTmp, litSumVec);
+    _mm256_store_si256((__m256i*)matchTmp, matchSumVec);
+    lSum64 = litTmp[0] + litTmp[2];
+    mSum64 = matchTmp[1] + matchTmp[3];
 
     /* Handle the leftover */
     for (; i < nbSeqs; i++) {
-        lSum += seqs[i].litLength;
-        mSum += seqs[i].matchLength;
-        if (seqs[i].matchLength == 0) break; /* end of block */
+        lSum64 += seqs[i].litLength;
+        mSum64 += seqs[i].matchLength;
+        if (seqs[i].matchLength == 0 || seqs[i].offset == 0) {
+            if (seqs[i].offset != 0 || seqs[i].matchLength != 0) {
+                BlockSummary bs;
+                bs.nbSequences = ERROR(externalSequences_invalid);
+                return bs;
+            }
+            break; /* end of block */
+        }
     }
 
-    if (i==nbSeqs) {
-        /* reaching end of sequences: end of block signal was not present */
+    if (i == nbSeqs || lSum64 > (size_t)-1 || mSum64 > (size_t)-1 - lSum64) {
+        /* no end-of-block delimiter found or size_t overflow */
         BlockSummary bs;
         bs.nbSequences = ERROR(externalSequences_invalid);
         return bs;
     }
     {   BlockSummary bs;
-        bs.nbSequences = i+1;
-        bs.blockSize = lSum + mSum;
-        bs.litSize = lSum;
+        bs.nbSequences = i + 1;
+        bs.blockSize = (size_t)(lSum64 + mSum64);
+        bs.litSize = (size_t)lSum64;
         return bs;
     }
 }
@@ -7867,147 +7893,123 @@ BlockSummary ZSTD_get1BlockSummary(const ZSTD_Sequence* seqs, size_t nbSeqs)
 
 BlockSummary ZSTD_get1BlockSummary(const ZSTD_Sequence* seqs, size_t nbSeqs)
 {
-    size_t totalMatchSize = 0;
-    size_t litSize = 0;
+    U64 totalMatchSize64 = 0;
+    U64 litSize64 = 0;
     size_t i = 0;
-    int found_terminator = 0; 
-    size_t vl_max = __riscv_vsetvlmax_e32m1();
+    int found_terminator = 0;
+    size_t vl_max = __riscv_vsetvlmax_e64m1();
     typedef uint32_t __attribute__((may_alias)) aliased_u32;
-    vuint32m1_t v_lit_sum = __riscv_vmv_v_x_u32m1(0, vl_max);
-    vuint32m1_t v_match_sum = __riscv_vmv_v_x_u32m1(0, vl_max);
+    vuint64m1_t v_lit_sum = __riscv_vmv_v_x_u64m1(0, vl_max);
+    vuint64m1_t v_match_sum = __riscv_vmv_v_x_u64m1(0, vl_max);
 
-    for (; i  < nbSeqs; ) {
-        size_t vl = __riscv_vsetvl_e32m2(nbSeqs - i); 
+    for (; i < nbSeqs; ) {
+        size_t vl = __riscv_vsetvl_e32m2(nbSeqs - i);
 
         vuint32m2x4_t v_tuple = __riscv_vlseg4e32_v_u32m2x4(
-            (const aliased_u32*)((const void*)&seqs[i]), 
+            (const aliased_u32*)((const void*)&seqs[i]),
             vl
         );
+        vuint32m2_t v_offset = __riscv_vget_v_u32m2x4_u32m2(v_tuple, 0);
         vuint32m2_t v_lit = __riscv_vget_v_u32m2x4_u32m2(v_tuple, 1);
         vuint32m2_t v_match = __riscv_vget_v_u32m2x4_u32m2(v_tuple, 2);
 
-        // Check if any element has a matchLength of 0
-        vbool16_t mask = __riscv_vmseq_vx_u32m2_b16(v_match, 0, vl);
+        /* Check if any element has a matchLength or offset of 0 */
+        vbool16_t mask = __riscv_vmor_mm_b16(
+            __riscv_vmseq_vx_u32m2_b16(v_match, 0, vl),
+            __riscv_vmseq_vx_u32m2_b16(v_offset, 0, vl),
+            vl
+        );
         int first_zero = __riscv_vfirst_m_b16(mask, vl);
 
         if (first_zero >= 0) {
-            // Find the first zero byte and set the effective length to that index + 1 to 
-            // recompute the cumulative vector length of literals and matches
-            vl = first_zero + 1;
-            
-            // recompute the cumulative vector length of literals and matches
-            v_lit_sum = __riscv_vredsum_vs_u32m2_u32m1(__riscv_vslidedown_vx_u32m2(v_lit, 0, vl), v_lit_sum, vl);
-            v_match_sum = __riscv_vredsum_vs_u32m2_u32m1(__riscv_vslidedown_vx_u32m2(v_match, 0, vl), v_match_sum, vl);
+            vl = (size_t)first_zero + 1;
+            if (seqs[i + vl - 1].offset != 0 || seqs[i + vl - 1].matchLength != 0) {
+                BlockSummary bs;
+                bs.nbSequences = ERROR(externalSequences_invalid);
+                return bs;
+            }
+            v_lit_sum = __riscv_vwredsumu_vs_u32m2_u64m1(__riscv_vslidedown_vx_u32m2(v_lit, 0, vl), v_lit_sum, vl);
+            v_match_sum = __riscv_vwredsumu_vs_u32m2_u64m1(__riscv_vslidedown_vx_u32m2(v_match, 0, vl), v_match_sum, vl);
 
             i += vl;
-            found_terminator = 1; 
-            assert(seqs[i - 1].offset == 0);
+            found_terminator = 1;
             break;
         } else {
-
-            v_lit_sum = __riscv_vredsum_vs_u32m2_u32m1(v_lit, v_lit_sum, vl);
-            v_match_sum = __riscv_vredsum_vs_u32m2_u32m1(v_match, v_match_sum, vl);
+            v_lit_sum = __riscv_vwredsumu_vs_u32m2_u64m1(v_lit, v_lit_sum, vl);
+            v_match_sum = __riscv_vwredsumu_vs_u32m2_u64m1(v_match, v_match_sum, vl);
             i += vl;
         }
     }
-    litSize = __riscv_vmv_x_s_u32m1_u32(v_lit_sum);
-    totalMatchSize = __riscv_vmv_x_s_u32m1_u32(v_match_sum);
+    litSize64 = __riscv_vmv_x_s_u64m1_u64(v_lit_sum);
+    totalMatchSize64 = __riscv_vmv_x_s_u64m1_u64(v_match_sum);
 
-    if (!found_terminator && i==nbSeqs) {
+    if ((!found_terminator && i == nbSeqs)
+        || litSize64 > (size_t)-1
+        || totalMatchSize64 > (size_t)-1 - litSize64) {
         BlockSummary bs;
         bs.nbSequences = ERROR(externalSequences_invalid);
         return bs;
     }
     {   BlockSummary bs;
         bs.nbSequences = i;
-        bs.blockSize = litSize + totalMatchSize;
-        bs.litSize = litSize;
+        bs.blockSize = (size_t)(litSize64 + totalMatchSize64);
+        bs.litSize = (size_t)litSize64;
         return bs;
     }
 }
 
 #else
 
-/*
- * The function assumes `litMatchLength` is a packed 64-bit value where the
- * lower 32 bits represent the match length. The check varies based on the
- * system's endianness:
- * - On little-endian systems, it verifies if the entire 64-bit value is at most
- * 0xFFFFFFFF, indicating the match length (lower 32 bits) is zero.
- * - On big-endian systems, it directly checks if the lower 32 bits are zero.
- *
- * @returns 1 if the match length is zero, 0 otherwise.
- */
-FORCE_INLINE_TEMPLATE int matchLengthHalfIsZero(U64 litMatchLength)
-{
-    if (MEM_isLittleEndian()) {
-        return litMatchLength <= 0xFFFFFFFFULL;
-    } else {
-        return (U32)litMatchLength == 0;
-    }
-}
-
 BlockSummary ZSTD_get1BlockSummary(const ZSTD_Sequence* seqs, size_t nbSeqs)
 {
-    /* Use multiple accumulators for efficient use of wide out-of-order machines. */
-    U64 litMatchSize0 = 0;
-    U64 litMatchSize1 = 0;
-    U64 litMatchSize2 = 0;
-    U64 litMatchSize3 = 0;
+    /* Use multiple 64-bit accumulators for efficient use of wide out-of-order machines
+     * while preventing 32-bit wraparound or cross-field carries. */
+    U64 litSize0 = 0, litSize1 = 0, litSize2 = 0, litSize3 = 0;
+    U64 matchSize0 = 0, matchSize1 = 0, matchSize2 = 0, matchSize3 = 0;
+    U64 litTotal, matchTotal;
     size_t n = 0;
 
-    ZSTD_STATIC_ASSERT(offsetof(ZSTD_Sequence, litLength) + 4 == offsetof(ZSTD_Sequence, matchLength));
-    ZSTD_STATIC_ASSERT(offsetof(ZSTD_Sequence, matchLength) + 4 == offsetof(ZSTD_Sequence, rep));
-    assert(seqs);
+    assert(seqs || nbSeqs == 0);
 
     if (nbSeqs > 3) {
         /* Process the input in 4 independent streams to reach high throughput. */
         do {
-            /* Load `litLength` and `matchLength` as a packed `U64`. It is safe
-             * to use 64-bit unsigned arithmetic here because the sum of `litLength`
-             * and `matchLength` cannot exceed the block size, so the 32-bit
-             * subparts will never overflow. */
-            U64 litMatchLength = MEM_read64(&seqs[n].litLength);
-            litMatchSize0 += litMatchLength;
-            if (matchLengthHalfIsZero(litMatchLength)) {
-                assert(seqs[n].offset == 0);
-                goto _out;
+            litSize0   += seqs[n].litLength;
+            matchSize0 += seqs[n].matchLength;
+            if (seqs[n].matchLength == 0 || seqs[n].offset == 0) {
+                goto _check_term;
             }
 
-            litMatchLength = MEM_read64(&seqs[n + 1].litLength);
-            litMatchSize1 += litMatchLength;
-            if (matchLengthHalfIsZero(litMatchLength)) {
+            litSize1   += seqs[n + 1].litLength;
+            matchSize1 += seqs[n + 1].matchLength;
+            if (seqs[n + 1].matchLength == 0 || seqs[n + 1].offset == 0) {
                 n += 1;
-                assert(seqs[n].offset == 0);
-                goto _out;
+                goto _check_term;
             }
 
-            litMatchLength = MEM_read64(&seqs[n + 2].litLength);
-            litMatchSize2 += litMatchLength;
-            if (matchLengthHalfIsZero(litMatchLength)) {
+            litSize2   += seqs[n + 2].litLength;
+            matchSize2 += seqs[n + 2].matchLength;
+            if (seqs[n + 2].matchLength == 0 || seqs[n + 2].offset == 0) {
                 n += 2;
-                assert(seqs[n].offset == 0);
-                goto _out;
+                goto _check_term;
             }
 
-            litMatchLength = MEM_read64(&seqs[n + 3].litLength);
-            litMatchSize3 += litMatchLength;
-            if (matchLengthHalfIsZero(litMatchLength)) {
+            litSize3   += seqs[n + 3].litLength;
+            matchSize3 += seqs[n + 3].matchLength;
+            if (seqs[n + 3].matchLength == 0 || seqs[n + 3].offset == 0) {
                 n += 3;
-                assert(seqs[n].offset == 0);
-                goto _out;
+                goto _check_term;
             }
 
             n += 4;
-        } while(n < nbSeqs - 3);
+        } while (n < nbSeqs - 3);
     }
 
     for (; n < nbSeqs; n++) {
-        U64 litMatchLength = MEM_read64(&seqs[n].litLength);
-        litMatchSize0 += litMatchLength;
-        if (matchLengthHalfIsZero(litMatchLength)) {
-            assert(seqs[n].offset == 0);
-            goto _out;
+        litSize0   += seqs[n].litLength;
+        matchSize0 += seqs[n].matchLength;
+        if (seqs[n].matchLength == 0 || seqs[n].offset == 0) {
+            goto _check_term;
         }
     }
     /* At this point n == nbSeqs, so no end terminator. */
@@ -8015,17 +8017,23 @@ BlockSummary ZSTD_get1BlockSummary(const ZSTD_Sequence* seqs, size_t nbSeqs)
         bs.nbSequences = ERROR(externalSequences_invalid);
         return bs;
     }
-_out:
-    litMatchSize0 += litMatchSize1 + litMatchSize2 + litMatchSize3;
+_check_term:
+    if (seqs[n].offset != 0 || seqs[n].matchLength != 0) {
+        BlockSummary bs;
+        bs.nbSequences = ERROR(externalSequences_invalid);
+        return bs;
+    }
+    litTotal   = litSize0 + litSize1 + litSize2 + litSize3;
+    matchTotal = matchSize0 + matchSize1 + matchSize2 + matchSize3;
+    if (litTotal > (size_t)-1 || matchTotal > (size_t)-1 - litTotal) {
+        BlockSummary bs;
+        bs.nbSequences = ERROR(externalSequences_invalid);
+        return bs;
+    }
     {   BlockSummary bs;
         bs.nbSequences = n + 1;
-        if (MEM_isLittleEndian()) {
-            bs.litSize = (U32)litMatchSize0;
-            bs.blockSize = bs.litSize + (litMatchSize0 >> 32);
-        } else {
-            bs.litSize = litMatchSize0 >> 32;
-            bs.blockSize = bs.litSize + (U32)litMatchSize0;
-        }
+        bs.litSize = (size_t)litTotal;
+        bs.blockSize = (size_t)(litTotal + matchTotal);
         return bs;
     }
 }
@@ -8048,13 +8056,16 @@ ZSTD_compressSequencesAndLiterals_internal(ZSTD_CCtx* cctx,
     RETURN_ERROR_IF(nbSequences == 0, externalSequences_invalid, "Requires at least 1 end-of-block");
 
     /* Special case: empty frame */
-    if ((nbSequences == 1) && (inSeqs[0].litLength == 0)) {
-        U32 const cBlockHeader24 = 1 /* last block */ + (((U32)bt_raw)<<1);
-        RETURN_ERROR_IF(dstCapacity<3, dstSize_tooSmall, "No room for empty frame block header");
-        MEM_writeLE24(op, cBlockHeader24);
-        op += ZSTD_blockHeaderSize;
-        dstCapacity -= ZSTD_blockHeaderSize;
-        cSize += ZSTD_blockHeaderSize;
+    if (remaining == 0) {
+        RETURN_ERROR_IF(nbSequences != 1 || litSize != 0
+                        || inSeqs[0].offset != 0 || inSeqs[0].litLength != 0 || inSeqs[0].matchLength != 0,
+                        externalSequences_invalid,
+                        "Empty frame requires a single empty end-of-block sequence");
+        {   U32 const cBlockHeader24 = 1 /* last block */ + (((U32)bt_raw)<<1);
+            RETURN_ERROR_IF(dstCapacity < ZSTD_blockHeaderSize, dstSize_tooSmall, "No room for empty frame block header");
+            MEM_writeLE24(op, cBlockHeader24);
+            return ZSTD_blockHeaderSize;
+        }
     }
 
     while (nbSequences) {
@@ -8065,6 +8076,7 @@ ZSTD_compressSequencesAndLiterals_internal(ZSTD_CCtx* cctx,
         assert(block.nbSequences <= nbSequences);
         RETURN_ERROR_IF(block.litSize > litSize, externalSequences_invalid, "discrepancy: Sequences require more literals than present in buffer");
         RETURN_ERROR_IF(block.blockSize > cctx->blockSizeMax, externalSequences_invalid, "sequences incorrectly define a too large block");
+        RETURN_ERROR_IF(block.blockSize > remaining, externalSequences_invalid, "discrepancy: Sequences exceed remaining srcSize");
         ZSTD_resetSeqStore(&cctx->seqStore);
 
         conversionStatus = ZSTD_convertBlockSequences(cctx,
