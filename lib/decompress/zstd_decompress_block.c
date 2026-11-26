@@ -1377,6 +1377,9 @@ ZSTD_decodeSequence(seqState_t* seqState, const ZSTD_longOffset_e longOffsets, c
     seqState->prevOffset[1] = prevOffset1;
     seqState->prevOffset[2] = prevOffset2;
 #else   /* !defined(__aarch64__) */
+    size_t prevOffset0 = seqState->prevOffset[0];
+    size_t prevOffset1 = seqState->prevOffset[1];
+    size_t prevOffset2 = seqState->prevOffset[2];
     const ZSTD_seqSymbol* const llDInfo = seqState->stateLL.statePtr;
     const ZSTD_seqSymbol* const mlDInfo = seqState->stateML.statePtr;
     const ZSTD_seqSymbol* const ofDInfo = seqState->stateOffb.statePtr;
@@ -1410,22 +1413,29 @@ ZSTD_decodeSequence(seqState_t* seqState, const ZSTD_longOffset_e longOffsets, c
                     offset = ofBase + BIT_readBitsFast(&seqState->DStream, ofBits/*>0*/);   /* <=  (ZSTD_WINDOWLOG_MAX-1) bits */
                     if (MEM_32bits()) BIT_reloadDStream(&seqState->DStream);
                 }
-                seqState->prevOffset[2] = seqState->prevOffset[1];
-                seqState->prevOffset[1] = seqState->prevOffset[0];
-                seqState->prevOffset[0] = offset;
+                prevOffset2 = prevOffset1;
+                prevOffset1 = prevOffset0;
+                prevOffset0 = offset;
             } else {
                 U32 const ll0 = (llDInfo->baseValue == 0);
                 if (LIKELY((ofBits == 0))) {
-                    offset = seqState->prevOffset[ll0];
-                    seqState->prevOffset[1] = seqState->prevOffset[!ll0];
-                    seqState->prevOffset[0] = offset;
+                    if (ll0) {
+                        offset = prevOffset1;
+                        prevOffset1 = prevOffset0;
+                        prevOffset0 = offset;
+                    } else {
+                        offset = prevOffset0;
+                    }
                 } else {
                     offset = ofBase + ll0 + BIT_readBitsFast(&seqState->DStream, 1);
-                    {   size_t temp = (offset==3) ? seqState->prevOffset[0] - 1 : seqState->prevOffset[offset];
+                    {   size_t temp = (offset == 1)   ? prevOffset1
+                                      : (offset == 3) ? prevOffset0 - 1
+                                      : (offset >= 2) ? prevOffset2
+                                      : prevOffset0;
                         temp -= !temp; /* 0 is not valid: input corrupted => force offset to -1 => corruption detected at execSequence */
-                        if (offset != 1) seqState->prevOffset[2] = seqState->prevOffset[1];
-                        seqState->prevOffset[1] = seqState->prevOffset[0];
-                        seqState->prevOffset[0] = offset = temp;
+                        prevOffset2 = (offset == 1) ? prevOffset2 : prevOffset1;
+                        prevOffset1 = prevOffset0;
+                        prevOffset0 = offset = temp;
             }   }   }
             seq.offset = offset;
         }
@@ -1461,6 +1471,9 @@ ZSTD_decodeSequence(seqState_t* seqState, const ZSTD_longOffset_e longOffsets, c
             BIT_reloadDStream(&seqState->DStream);
         }
     }
+    seqState->prevOffset[0] = prevOffset0;
+    seqState->prevOffset[1] = prevOffset1;
+    seqState->prevOffset[2] = prevOffset2;
 #endif  /* defined(__aarch64__) */
 
     return seq;
