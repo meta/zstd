@@ -1295,17 +1295,33 @@ FIO_createFilename_fromOutDir(const char* path, const char* outDirName, const si
     filenameStart = extractFilename(filenameStart, '/');  /* sometimes, '/' separator is also used on Windows (mingw+msys2) */
 #endif
 
-    result = (char*) calloc(1, strlen(outDirName) + 1 + strlen(filenameStart) + suffixLen + 1);
-    if (!result) {
-        EXM_THROW(30, "zstd: FIO_createFilename_fromOutDir: %s", strerror(errno));
-    }
+    {   size_t const outDirLen = strlen(outDirName);
+        size_t const filenameLen = strlen(filenameStart);
+        int hasTrailingSep = 0;
 
-    memcpy(result, outDirName, strlen(outDirName));
-    if (outDirName[strlen(outDirName)-1] == separator) {
-        memcpy(result + strlen(outDirName), filenameStart, strlen(filenameStart));
-    } else {
-        memcpy(result + strlen(outDirName), &separator, 1);
-        memcpy(result + strlen(outDirName) + 1, filenameStart, strlen(filenameStart));
+        if (outDirLen > 0) {
+            char const lastChar = outDirName[outDirLen - 1];
+#if defined(_MSC_VER) || defined(__MINGW32__) || defined(__MSVCRT__)
+            hasTrailingSep = (lastChar == separator) || (lastChar == '/');
+#else
+            hasTrailingSep = (lastChar == separator);
+#endif
+        }
+
+        result = (char*) calloc(1, outDirLen + (hasTrailingSep ? 0 : 1) + filenameLen + suffixLen + 1);
+        if (!result) {
+            EXM_THROW(30, "zstd: FIO_createFilename_fromOutDir: %s", strerror(errno));
+        }
+
+        if (outDirLen > 0) {
+            memcpy(result, outDirName, outDirLen);
+        }
+        if (hasTrailingSep || outDirLen == 0) {
+            memcpy(result + outDirLen, filenameStart, filenameLen);
+        } else {
+            result[outDirLen] = separator;
+            memcpy(result + outDirLen + 1, filenameStart, filenameLen);
+        }
     }
 
     return result;
