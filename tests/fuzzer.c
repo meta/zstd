@@ -4092,6 +4092,55 @@ static int basicUnitTests(U32 const seed, double compressibility)
         ZSTD_freeCCtx(cctx);
     }
 
+    DISPLAYLEVEL(3, "test%3i : simple one-shot leaves CCtx ready for streaming : ", testNb++);
+    {
+        ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+        ZSTD_CCtx* const ref = ZSTD_createCCtx();
+        ZSTD_CDict* const cdict = ZSTD_createCDict(CNBuffer, 100, 1);
+        ZSTD_inBuffer refIn = { CNBuffer, 12, 0 };
+        ZSTD_outBuffer refOut = { decodedBuffer, CNBuffSize, 0 };
+        int api;
+
+        CHECK(cctx != NULL);
+        CHECK(ref != NULL);
+        CHECK(cdict != NULL);
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1));
+        CHECK_Z(ZSTD_CCtx_setParameter(ref, ZSTD_c_checksumFlag, 1));
+        CHECK_Z(ZSTD_CCtx_refCDict(cctx, cdict));
+        CHECK_Z(ZSTD_CCtx_refCDict(ref, cdict));
+        CHECK_Z(ZSTD_compressStream2(ref, &refOut, &refIn, ZSTD_e_continue));
+        CHECK_EQ(refIn.pos, refIn.size);
+        CHECK_EQ(ZSTD_compressStream2(ref, &refOut, &refIn, ZSTD_e_end), 0);
+
+        for (api = 0; api < 3; ++api) {
+            ZSTD_inBuffer in = { CNBuffer, 12, 0 };
+            ZSTD_outBuffer out = { compressedBuffer, compressedBufferSize, 0 };
+            size_t result;
+
+            if (api == 0) {
+                result = ZSTD_compressCCtx(cctx, compressedBuffer, compressedBufferSize,
+                                           NULL, 0, 1);
+            } else if (api == 1) {
+                result = ZSTD_compress_usingDict(cctx, compressedBuffer, compressedBufferSize,
+                                                 NULL, 0, CNBuffer, 100, 1);
+            } else {
+                result = ZSTD_compress_usingCDict(cctx, compressedBuffer, compressedBufferSize,
+                                                  NULL, 0, cdict);
+            }
+            CHECK_Z(result);
+            CHECK_Z(ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_continue));
+            CHECK_EQ(in.pos, in.size);
+            CHECK_EQ(ZSTD_compressStream2(cctx, &out, &in, ZSTD_e_end), 0);
+            CHECK_EQ(out.pos, refOut.pos);
+            CHECK(!memcmp(compressedBuffer, decodedBuffer, out.pos));
+        }
+
+        ZSTD_freeCDict(cdict);
+        ZSTD_freeCCtx(ref);
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : maxBlockSize = 2K : ", testNb++);
     {
         ZSTD_CCtx* cctx = ZSTD_createCCtx();
