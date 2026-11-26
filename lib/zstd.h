@@ -2742,6 +2742,7 @@ size_t ZSTD_initCStream_usingDict(ZSTD_CStream* zcs,
 /*! ZSTD_initCStream_advanced() :
  * This function is DEPRECATED, and is equivalent to:
  *     ZSTD_CCtx_reset(zcs, ZSTD_reset_session_only);
+ *     ZSTD_CCtx_setParameter(zcs, ZSTD_c_compressionLevel, 0);
  *     ZSTD_CCtx_setParams(zcs, params);
  *     ZSTD_CCtx_setPledgedSrcSize(zcs, pledgedSrcSize);
  *     ZSTD_CCtx_loadDictionary(zcs, dict, dictSize);
