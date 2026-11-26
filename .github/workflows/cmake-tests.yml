@@ -57,6 +57,51 @@ jobs:
       run: |
         cmake --build cmake-build --config Release
 
+  # A parent project includes zstd with add_subdirectory(), and gets the headers
+  # from the libzstd_static and libzstd_shared targets alone, without include paths.
+  cmake-subdirectory-consumer:
+    name: "CMake subdirectory consumer"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: Build and run the consumers
+      run: |
+        parent=$(mktemp -d "$RUNNER_TEMP/zstd-consumer.XXXXXX")
+
+        cat > "$parent/CMakeLists.txt" <<'EOF'
+        cmake_minimum_required(VERSION 3.10)
+        project(zstd_consumer C)
+        add_subdirectory("${ZSTD_PROJECT_DIR}" zstd)
+        foreach(kind IN ITEMS static shared)
+          add_executable(consumer_${kind} main.c)
+          target_link_libraries(consumer_${kind} PRIVATE libzstd_${kind})
+        endforeach()
+        EOF
+
+        cat > "$parent/main.c" <<'EOF'
+        #include <string.h>
+        #include <zstd.h>
+        #include <zdict.h>
+        int main(void)
+        {
+            char const src[] = "zstd, included with add_subdirectory()";
+            char cBuf[128];
+            char dBuf[sizeof(src)];
+            size_t const cSize = ZSTD_compress(cBuf, sizeof(cBuf), src, sizeof(src), 1);
+            if (ZSTD_isError(cSize)) return 1;
+            if (ZSTD_decompress(dBuf, sizeof(dBuf), cBuf, cSize) != sizeof(src)) return 1;
+            if (ZDICT_getDictID(src, sizeof(src)) != 0) return 1;
+            return memcmp(src, dBuf, sizeof(src)) != 0;
+        }
+        EOF
+
+        cmake -S "$parent" -B "$parent/build" \
+          -DZSTD_PROJECT_DIR="$GITHUB_WORKSPACE/build/cmake" \
+          -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF
+        cmake --build "$parent/build" --parallel
+        "$parent/build/consumer_static"
+        "$parent/build/consumer_shared"
+
   # Build without the tests, so C++ is not enabled, with CMAKE_CXX_COMPILER set as cross toolchain files do.
   # The x86-64 assembly is only built when the compilation flags are applied.
   cmake-c-only:
