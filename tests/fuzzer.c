@@ -5859,6 +5859,31 @@ static int basicUnitTests(U32 const seed, double compressibility)
         }
         DISPLAYLEVEL(3, "OK \n");
 
+        DISPLAYLEVEL(3, "test%3i : COVER and FASTCOVER reject wrapping sample sizes : ", testNb++);
+        {   size_t const half = (((size_t)-1) / 2) + 100;
+            const size_t wrapSizes[7] = { 200, 200, 200, 200, 200, half, half };
+            ZDICT_fastCover_params_t fcParams;
+            ZDICT_cover_params_t cParams;
+            size_t r;
+            memset(&fcParams, 0, sizeof(fcParams));
+            fcParams.k = 50; fcParams.d = 6; fcParams.f = 16; fcParams.accel = 1;
+            r = ZDICT_trainFromBuffer_fastCover(dictBuffer, dictBufferCapacity,
+                                                CNBuffer, wrapSizes, 7, fcParams);
+            if (!ZDICT_isError(r) || ZSTD_getErrorCode(r) != ZSTD_error_srcSize_wrong)
+                goto _output_error;
+            r = ZDICT_trainFromBuffer(dictBuffer, dictBufferCapacity,
+                                      CNBuffer, wrapSizes, 7);
+            if (!ZDICT_isError(r) || ZSTD_getErrorCode(r) != ZSTD_error_srcSize_wrong)
+                goto _output_error;
+            memset(&cParams, 0, sizeof(cParams));
+            cParams.k = 50; cParams.d = 6;
+            r = ZDICT_trainFromBuffer_cover(dictBuffer, dictBufferCapacity,
+                                            CNBuffer, wrapSizes, 7, cParams);
+            if (!ZDICT_isError(r) || ZSTD_getErrorCode(r) != ZSTD_error_srcSize_wrong)
+                goto _output_error;
+        }
+        DISPLAYLEVEL(3, "OK \n");
+
         DISPLAYLEVEL(3, "test%3i : Multithreaded COVER dictBuilder : ", testNb++);
         { U32 u; for (u=0; u<nbSamples; u++) samplesSizes[u] = sampleUnitSize; }
         {   ZDICT_cover_params_t coverParams;

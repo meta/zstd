@@ -238,8 +238,8 @@ static int FASTCOVER_checkParameters(ZDICT_cover_params_t parameters,
   if (parameters.d > parameters.k) {
     return 0;
   }
-  /* 0 < f <= FASTCOVER_MAX_F*/
-  if (f > FASTCOVER_MAX_F || f == 0) {
+  /* 0 < f <= FASTCOVER_MAX_F, and frequency table size must fit in size_t */
+  if (f > FASTCOVER_MAX_F || f == 0 || ((U64)1 << f) > ((size_t)-1) / sizeof(U32)) {
     return 0;
   }
   /* 0 < splitPoint <= 1 */
@@ -318,8 +318,6 @@ FASTCOVER_ctx_init(FASTCOVER_ctx_t* ctx,
     const size_t trainingSamplesSize = splitPoint < 1.0 ? COVER_sum(samplesSizes, nbTrainSamples) : totalSamplesSize;
     const size_t testSamplesSize = splitPoint < 1.0 ? COVER_sum(samplesSizes + nbTrainSamples, nbTestSamples) : totalSamplesSize;
     const size_t readLength = MAX(d, sizeof(U64));
-    ctx->displayLevel = displayLevel;
-
     /* Checks */
     if (totalSamplesSize < readLength ||
         totalSamplesSize >= (size_t)FASTCOVER_MAX_SAMPLES_SIZE) {
@@ -348,6 +346,7 @@ FASTCOVER_ctx_init(FASTCOVER_ctx_t* ctx,
 
     /* Zero the context */
     memset(ctx, 0, sizeof(*ctx));
+    ctx->displayLevel = displayLevel;
     DISPLAYLEVEL(2, "Training on %u samples of total size %u\n", nbTrainSamples,
                     (unsigned)trainingSamplesSize);
     DISPLAYLEVEL(2, "Testing on %u samples of total size %u\n", nbTestSamples,
@@ -364,7 +363,14 @@ FASTCOVER_ctx_init(FASTCOVER_ctx_t* ctx,
     ctx->accelParams = accelParams;
 
     /* The offsets of each file */
-    ctx->offsets = (size_t*)calloc((nbSamples + 1), sizeof(size_t));
+    {   size_t const nbOffsets = (size_t)nbSamples + 1;
+        if (nbOffsets == 0 || nbOffsets > ((size_t)-1) / sizeof(size_t) ||
+            ((U64)1 << f) > ((size_t)-1) / sizeof(U32)) {
+            DISPLAYLEVEL(1, "Failed to allocate scratch buffers \n");
+            return ERROR(memory_allocation);
+        }
+        ctx->offsets = (size_t*)calloc(nbOffsets, sizeof(size_t));
+    }
     if (ctx->offsets == NULL) {
         DISPLAYLEVEL(1, "Failed to allocate scratch buffers \n");
         FASTCOVER_ctx_destroy(ctx);
@@ -381,7 +387,7 @@ FASTCOVER_ctx_init(FASTCOVER_ctx_t* ctx,
     }
 
     /* Initialize frequency array of size 2^f */
-    ctx->freqs = (U32*)calloc(((U64)1 << f), sizeof(U32));
+    ctx->freqs = (U32*)calloc((size_t)((U64)1 << f), sizeof(U32));
     if (ctx->freqs == NULL) {
         DISPLAYLEVEL(1, "Failed to allocate frequency table \n");
         FASTCOVER_ctx_destroy(ctx);
@@ -484,23 +490,24 @@ static void FASTCOVER_tryParameters(void* opaque)
   size_t dictBufferCapacity = data->dictBufferCapacity;
   size_t totalCompressedSize = ERROR(GENERIC);
   /* Initialize array to keep track of frequency of dmer within activeSegment */
-  U16* segmentFreqs = (U16*)calloc(((U64)1 << ctx->f), sizeof(U16));
+  size_t const freqTableLen = (size_t)((U64)1 << ctx->f);
+  U16* segmentFreqs = (U16*)calloc(freqTableLen, sizeof(U16));
   /* Allocate space for hash table, dict, and freqs */
   BYTE *const dict = (BYTE*)malloc(dictBufferCapacity);
   COVER_dictSelection_t selection = COVER_dictSelectionError(ERROR(GENERIC));
-  U32* freqs = (U32*) malloc(((U64)1 << ctx->f) * sizeof(U32));
+  U32* freqs = (U32*)malloc(freqTableLen * sizeof(U32));
   const int displayLevel = ctx->displayLevel;
   if (!segmentFreqs || !dict || !freqs) {
     DISPLAYLEVEL(1, "Failed to allocate buffers: out of memory\n");
     goto _cleanup;
   }
   /* Copy the frequencies because we need to modify them */
-  memcpy(freqs, ctx->freqs, ((U64)1 << ctx->f) * sizeof(U32));
+  memcpy(freqs, ctx->freqs, freqTableLen * sizeof(U32));
   /* Build the dictionary */
   { const size_t tail = FASTCOVER_buildDictionary(ctx, freqs, dict, dictBufferCapacity,
                                                     parameters, segmentFreqs);
 
-    const unsigned nbFinalizeSamples = (unsigned)(ctx->nbTrainSamples * ctx->accelParams.finalize / 100);
+    const unsigned nbFinalizeSamples = (unsigned)(((U64)ctx->nbTrainSamples * ctx->accelParams.finalize) / 100);
     selection = COVER_selectDict(dict + tail, dictBufferCapacity, dictBufferCapacity - tail,
          ctx->samples, ctx->samplesSizes, nbFinalizeSamples, ctx->nbTrainSamples, ctx->nbSamples, parameters, ctx->offsets,
          totalCompressedSize);
@@ -601,10 +608,15 @@ ZDICT_trainFromBuffer_fastCover(void* dictBuffer, size_t dictBufferCapacity,
     DISPLAYLEVEL(2, "Building dictionary\n");
     {
       /* Initialize array to keep track of frequency of dmer within activeSegment */
-      U16* segmentFreqs = (U16 *)calloc(((U64)1 << parameters.f), sizeof(U16));
-      const size_t tail = FASTCOVER_buildDictionary(&ctx, ctx.freqs, dictBuffer,
+      U16* segmentFreqs = (U16 *)calloc((size_t)((U64)1 << parameters.f), sizeof(U16));
+      if (segmentFreqs == NULL) {
+          DISPLAYLEVEL(1, "Failed to allocate segment frequency table\n");
+          FASTCOVER_ctx_destroy(&ctx);
+          return ERROR(memory_allocation);
+      }
+      { const size_t tail = FASTCOVER_buildDictionary(&ctx, ctx.freqs, dictBuffer,
                                                 dictBufferCapacity, coverParams, segmentFreqs);
-      const unsigned nbFinalizeSamples = (unsigned)(ctx.nbTrainSamples * ctx.accelParams.finalize / 100);
+        const unsigned nbFinalizeSamples = (unsigned)(((U64)ctx.nbTrainSamples * ctx.accelParams.finalize) / 100);
       const size_t dictionarySize = ZDICT_finalizeDictionary(
           dict, dictBufferCapacity, dict + tail, dictBufferCapacity - tail,
           samplesBuffer, samplesSizes, nbFinalizeSamples, coverParams.zParams);
@@ -612,9 +624,10 @@ ZDICT_trainFromBuffer_fastCover(void* dictBuffer, size_t dictBufferCapacity,
           DISPLAYLEVEL(2, "Constructed dictionary of size %u\n",
                       (unsigned)dictionarySize);
       }
-      FASTCOVER_ctx_destroy(&ctx);
-      free(segmentFreqs);
-      return dictionarySize;
+        FASTCOVER_ctx_destroy(&ctx);
+        free(segmentFreqs);
+        return dictionarySize;
+      }
     }
 }
 
