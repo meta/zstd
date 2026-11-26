@@ -168,6 +168,9 @@ FORCE_INLINE_TEMPLATE BitContainerType BIT_getLowerBits(BitContainerType bitCont
     DEBUG_STATIC_ASSERT(sizeof(bitContainer) == sizeof(U32));
     return _bzhi_u32(bitContainer, nbBits);
 #  endif
+#elif DYNAMIC_BMI2 && defined(__x86_64__) && !defined(__ILP32__)
+    assert(nbBits < BIT_MASK_SIZE);
+    return bitContainer & ((((U64)1) << nbBits) - 1);
 #else
     assert(nbBits < BIT_MASK_SIZE);
     return bitContainer & BIT_mask[nbBits];
