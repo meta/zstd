@@ -7,12 +7,11 @@ on:
     types:
       - published
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   windows-artifacts:
-    permissions:
-      contents: write # to fetch code and upload artifacts
     # For msys2, see https://ariya.io/2020/07/on-github-actions-with-msys2
     runs-on: ${{ matrix.shell == 'cmake' && 'windows-11-arm' || 'windows-latest' }}
     strategy:
@@ -29,6 +28,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+        with:
+          persist-credentials: false
 
       # MSYS2 setup
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # tag=v2.32.0
@@ -126,10 +127,58 @@ jobs:
         run: |
           Compress-Archive -Path "zstd-${{ github.ref_name }}-${{ matrix.ziparch }}" -DestinationPath "zstd-${{ github.ref_name }}-${{ matrix.ziparch }}.zip" -CompressionLevel Optimal
 
-      - name: Upload release asset
+      - name: Stage Windows ZIP for release
         if: github.event_name == 'release'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        with:
+          name: release-windows-${{ matrix.ziparch }}
+          path: zstd-${{ github.ref_name }}-${{ matrix.ziparch }}.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  publish-windows-artifacts:
+    if: github.event_name == 'release'
+    needs: windows-artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # tag=v8.0.2
+        with:
+          pattern: release-windows-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Select the release ZIPs
+        id: archives
+        shell: bash
         run: |
-          gh release upload "${{ github.ref_name }}" "$env:GITHUB_WORKSPACE/zstd-${{ github.ref_name }}-${{ matrix.ziparch }}.zip" --clobber
+          archives=()
+          for platform in win32 win64 win-arm64; do
+            archive="release-artifacts/zstd-${GITHUB_REF_NAME}-${platform}.zip"
+            test -s "$archive"
+            archives+=("$archive")
+          done
+
+          {
+            echo 'paths<<EOF'
+            printf '%s\n' "${archives[@]}"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest Windows release ZIPs
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # tag=v4.2.2
+        with:
+          subject-path: ${{ steps.archives.outputs.paths }}
+
+      - name: Upload release ZIPs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE_PATHS: ${{ steps.archives.outputs.paths }}
+        run: |
+          mapfile -t archives <<< "$ARCHIVE_PATHS"
+          gh release upload "$GITHUB_REF_NAME" "${archives[@]}" --clobber --repo "$GITHUB_REPOSITORY"
