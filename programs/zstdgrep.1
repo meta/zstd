@@ -11,16 +11,19 @@
 \fBzstdgrep\fR runs \fBgrep\fR(1) on files, or \fBstdin\fR if no files argument is given, after decompressing them with \fBzstdcat\fR(1)\.
 .
 .P
-The \fIgrep\-flags\fR and \fIpattern\fR arguments are passed on to \fBgrep\fR(1)\. If an \fB\-e\fR flag is found in the \fIgrep\-flags\fR, \fBzstdgrep\fR will not look for a \fIpattern\fR argument\.
+The \fIgrep\-flags\fR and \fIpattern\fR arguments are passed on to \fBgrep\fR(1), and follow its syntax\. If patterns are given with \fB\-e\fR or \fB\-f\fR flags, \fBzstdgrep\fR does not look for a \fIpattern\fR argument\.
+.
+.P
+\fBzstdgrep\fR does not search directories: \fB\-r\fR, \fB\-R\fR, \fB\-\-include\fR, \fB\-\-exclude\fR, \fB\-\-exclude\-from\fR and \fB\-\-exclude\-dir\fR are not supported\.
 .
 .P
 Note that modern \fBgrep\fR alternatives such as \fBripgrep\fR (\fBrg\fR(1)) support \fBzstd\fR\-compressed files out of the box, and can prove better alternatives than \fBzstdgrep\fR notably for unsupported complex pattern searches\. Note though that such alternatives may also feature some minor command line differences\.
 .
 .SH "EXIT STATUS"
-\fBzstdgrep\fR returns 0 if a line is selected in at least one input, and 1 if no line is selected\. If \fBgrep\fR(1) reports an error, its exit status (greater than 1) is returned\. In case of missing arguments or missing pattern, 1 will be returned\.
+\fBzstdgrep\fR returns 0 if a line is selected in at least one input, and 1 if no line is selected\. If an error occurs, for example an input that cannot be decompressed or an invalid pattern, 2 is returned, unless \fB\-q\fR is used and a line is selected\.
 .
 .SH "SEE ALSO"
 \fBzstd\fR(1)
 .
 .SH "AUTHORS"
-Thomas Klausner \fIwiz@NetBSD\.org\fR
+Thomas Klausner \fIwiz@NetBSD\.org\fR wrote the original version\.

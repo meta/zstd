@@ -1,2 +1,2 @@
 #!/bin/sh
-"$ZSTDGREP_BIN" $@
+"$ZSTDGREP_BIN" "$@"
