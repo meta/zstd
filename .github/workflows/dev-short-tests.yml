@@ -670,7 +670,7 @@ jobs:
       # SDE ships, and the old URL then starts answering 403. That has broken this
       # job twice (#3884 -> #3893, and again for 9.33.0). When it happens again,
       # get the current link from Intel's *stable* product page and update these
-      # three values together:
+      # three values together, here and in apx-sde:
       # https://www.intel.com/content/www/us/en/download/684897/intel-software-development-emulator.html
       SDE_URL: https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
       SDE_SHA256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
@@ -699,6 +699,44 @@ jobs:
         # instructions against the host's cpuid, and fails on hosts without CET
         # (e.g. AMD runners) at the first endbr64, in the dynamic loader.
         "$SDE_DIR/sde64" -tgl -cet -cet-raise 0 -cet-endbr-exe -cet-stderr -cet-abort -- ./zstd -b3
+
+  # No runner supports APX, so run the APX decompression paths under SDE.
+  # Building the APX code needs gcc >= 15 or clang >= 20, and an assembler that
+  # supports APX: ubuntu-26.04 runners have GCC 15 and clang 21.
+  apx-sde:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # 'false' means Don't stop matrix workflows even if some matrix failed.
+      matrix:
+        cc: [gcc, clang]
+    env:
+      # Same SDE as intel-cet-compatibility: update both jobs together.
+      SDE_URL: https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
+      SDE_SHA256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
+      SDE_DIR: sde-external-10.13.1-2026-07-28-lin
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+    - name: Build Zstd
+      run: |
+        ${{ matrix.cc }} --version
+        make -j zstd CC=${{ matrix.cc }} MOREFLAGS=-Werror V=1
+        # Fail if the compiler or the assembler is too old to build the APX code.
+        nm zstd | grep -q 'asm_loop_apx$'
+        nm zstd | grep -q ' ZSTD_decompressSequences_apxf'
+    - name: Get Intel SDE
+      run: |
+        curl -fsSL -o sde.tar.xz "$SDE_URL"
+        echo "$SDE_SHA256  sde.tar.xz" | sha256sum -c -
+        tar xJf sde.tar.xz
+    - name: Configure Permissions
+      run: |
+        echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+    - name: Run Under SDE
+      run: |
+        # Synthetic data doesn't exercise every path of the Huffman loops: use real text.
+        cat lib/*/*.c > sources.txt
+        # -dmr: emulate Diamond Rapids, which supports APX.
+        "$SDE_DIR/sde64" -dmr -- ./zstd -b1e19 -i0 sources.txt
 
   icx:
     # install instructions: https://www.intel.com/content/www/us/en/docs/oneapi/installation-guide-linux/2025-0/apt-005.html
