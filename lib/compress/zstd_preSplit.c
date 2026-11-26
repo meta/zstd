@@ -41,7 +41,7 @@ FORCE_INLINE_TEMPLATE unsigned hash2(const void *p, unsigned hashLog)
 
 typedef struct {
   unsigned events[HASHTABLESIZE];
-  size_t nbEvents;
+  U32 nbEvents;   /* <= block size; 32-bit so fpDistance() can use widening multiplies */
 } Fingerprint;
 typedef struct {
     Fingerprint pastEvents;
@@ -60,10 +60,17 @@ addEvents_generic(Fingerprint* fp, const void* src, size_t srcSize, size_t sampl
     size_t limit = srcSize - HASHLENGTH + 1;
     size_t n;
     assert(srcSize >= HASHLENGTH);
-    for (n = 0; n < limit; n+=samplingRate) {
+    /* unrolled : sampled positions can use immediate offsets from a single index */
+    for (n = 0; n + 3*samplingRate < limit; n += 4*samplingRate) {
+        fp->events[hash2(p+n, hashLog)]++;
+        fp->events[hash2(p+n+samplingRate, hashLog)]++;
+        fp->events[hash2(p+n+2*samplingRate, hashLog)]++;
+        fp->events[hash2(p+n+3*samplingRate, hashLog)]++;
+    }
+    for (; n < limit; n+=samplingRate) {
         fp->events[hash2(p+n, hashLog)]++;
     }
-    fp->nbEvents += limit/samplingRate;
+    fp->nbEvents += (U32)(limit/samplingRate);
 }
 
 FORCE_INLINE_TEMPLATE void
@@ -99,7 +106,7 @@ static U64 fpDistance(const Fingerprint* fp1, const Fingerprint* fp2, unsigned h
     assert(hashLog <= HASHLOG_MAX);
     for (n = 0; n < ((size_t)1 << hashLog); n++) {
         distance +=
-            ZSTD_abs64((S64)fp1->events[n] * (S64)fp2->nbEvents - (S64)fp2->events[n] * (S64)fp1->nbEvents);
+            ZSTD_abs64((S64)((U64)fp1->events[n] * fp2->nbEvents) - (S64)((U64)fp2->events[n] * fp1->nbEvents));
     }
     return distance;
 }
@@ -121,10 +128,11 @@ static int compareFingerprints(const Fingerprint* ref,
     }
 }
 
-static void mergeEvents(Fingerprint* acc, const Fingerprint* newfp)
+static void mergeEvents(Fingerprint* acc, const Fingerprint* newfp, unsigned hashLog)
 {
     size_t n;
-    for (n = 0; n < HASHTABLESIZE; n++) {
+    assert(hashLog <= HASHLOG_MAX);
+    for (n = 0; n < ((size_t)1 << hashLog); n++) {
         acc->events[n] += newfp->events[n];
     }
     acc->nbEvents += newfp->nbEvents;
@@ -177,7 +185,7 @@ static size_t ZSTD_splitBlock_byChunks(const void* blockStart, size_t blockSize,
         if (compareFingerprints(&fpstats->pastEvents, &fpstats->newEvents, penalty, hashParams[level])) {
             return pos;
         } else {
-            mergeEvents(&fpstats->pastEvents, &fpstats->newEvents);
+            mergeEvents(&fpstats->pastEvents, &fpstats->newEvents, hashParams[level]);
             if (penalty > 0) penalty--;
         }
     }
