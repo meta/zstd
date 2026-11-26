@@ -1093,8 +1093,10 @@ void UTIL_refFilename(FileNamesTable* fnt, const char* filename)
 static size_t getTotalTableSize(FileNamesTable* table)
 {
     size_t fnb, totalSize = 0;
-    for(fnb = 0 ; fnb < table->tableSize && table->fileNames[fnb] ; ++fnb) {
-        totalSize += strlen(table->fileNames[fnb]) + 1; /* +1 to add '\0' at the end of each fileName */
+    for (fnb = 0; fnb < table->tableSize && table->fileNames[fnb]; ++fnb) {
+        size_t const len = strlen(table->fileNames[fnb]);
+        CONTROL(len < (size_t)-1 - totalSize);
+        totalSize += len + 1; /* +1 to add '\0' at the end of each fileName */
     }
     return totalSize;
 }
@@ -1102,40 +1104,49 @@ static size_t getTotalTableSize(FileNamesTable* table)
 FileNamesTable*
 UTIL_mergeFileNamesTable(FileNamesTable* table1, FileNamesTable* table2)
 {
-    unsigned newTableIdx = 0;
+    size_t newTableIdx = 0;
     size_t pos = 0;
-    size_t newTotalTableSize;
+    size_t totalSize1, totalSize2, newTotalTableSize;
+    size_t totalEntries;
     char* buf;
 
     FileNamesTable* const newTable = UTIL_assembleFileNamesTable(NULL, 0, NULL);
     CONTROL( newTable != NULL );
 
-    newTotalTableSize = getTotalTableSize(table1) + getTotalTableSize(table2);
+    totalSize1 = getTotalTableSize(table1);
+    totalSize2 = getTotalTableSize(table2);
+    CONTROL(totalSize1 <= (size_t)-1 - totalSize2);
+    newTotalTableSize = totalSize1 + totalSize2;
 
-    buf = (char*) calloc(newTotalTableSize, sizeof(*buf));
+    buf = (char*) calloc(newTotalTableSize ? newTotalTableSize : 1, sizeof(*buf));
     CONTROL ( buf != NULL );
 
+    CONTROL(table1->tableSize <= (size_t)-1 - table2->tableSize);
+    totalEntries = table1->tableSize + table2->tableSize;
+    CONTROL(totalEntries <= (size_t)-1 / sizeof(*(newTable->fileNames)));
+
     newTable->buf = buf;
-    newTable->tableSize = table1->tableSize + table2->tableSize;
-    newTable->fileNames = (const char **) calloc(newTable->tableSize, sizeof(*(newTable->fileNames)));
+    newTable->tableSize = totalEntries;
+    newTable->tableCapacity = totalEntries ? totalEntries : 1;
+    newTable->fileNames = (const char **) calloc(newTable->tableCapacity, sizeof(*(newTable->fileNames)));
     CONTROL ( newTable->fileNames != NULL );
 
-    {   unsigned idx1;
-        for( idx1=0 ; (idx1 < table1->tableSize) && table1->fileNames[idx1] && (pos < newTotalTableSize); ++idx1, ++newTableIdx) {
+    {   size_t idx1;
+        for (idx1 = 0; (idx1 < table1->tableSize) && table1->fileNames[idx1] && (pos < newTotalTableSize); ++idx1, ++newTableIdx) {
             size_t const curLen = strlen(table1->fileNames[idx1]);
-            memcpy(buf+pos, table1->fileNames[idx1], curLen);
-            assert(newTableIdx <= newTable->tableSize);
-            newTable->fileNames[newTableIdx] = buf+pos;
-            pos += curLen+1;
+            memcpy(buf + pos, table1->fileNames[idx1], curLen);
+            assert(newTableIdx < newTable->tableCapacity);
+            newTable->fileNames[newTableIdx] = buf + pos;
+            pos += curLen + 1;
     }   }
 
-    {   unsigned idx2;
-        for( idx2=0 ; (idx2 < table2->tableSize) && table2->fileNames[idx2] && (pos < newTotalTableSize) ; ++idx2, ++newTableIdx) {
+    {   size_t idx2;
+        for (idx2 = 0; (idx2 < table2->tableSize) && table2->fileNames[idx2] && (pos < newTotalTableSize); ++idx2, ++newTableIdx) {
             size_t const curLen = strlen(table2->fileNames[idx2]);
-            memcpy(buf+pos, table2->fileNames[idx2], curLen);
-            assert(newTableIdx < newTable->tableSize);
-            newTable->fileNames[newTableIdx] = buf+pos;
-            pos += curLen+1;
+            memcpy(buf + pos, table2->fileNames[idx2], curLen);
+            assert(newTableIdx < newTable->tableCapacity);
+            newTable->fileNames[newTableIdx] = buf + pos;
+            pos += curLen + 1;
     }   }
     assert(pos <= newTotalTableSize);
     newTable->tableSize = newTableIdx;
@@ -1146,20 +1157,51 @@ UTIL_mergeFileNamesTable(FileNamesTable* table1, FileNamesTable* table2)
     return newTable;
 }
 
+static int UTIL_appendPathToBuf(char** bufStart, size_t* pos, size_t* bufSize,
+                                const char* path, size_t pathLength)
+{
+    size_t needed;
+    if (pathLength >= (size_t)-1 - *pos) {
+        free(*bufStart);
+        *bufStart = NULL;
+        return 0;
+    }
+    needed = *pos + pathLength + 1;
+    if (needed > *bufSize) {
+        size_t newListSize = *bufSize ? *bufSize : LIST_SIZE_INCREASE;
+        while (newListSize < needed) {
+            if (newListSize > ((size_t)-1) / 2) {
+                newListSize = needed;
+                break;
+            }
+            newListSize *= 2;
+        }
+        *bufStart = (char*)UTIL_realloc(*bufStart, newListSize);
+        if (*bufStart == NULL) return 0;
+        *bufSize = newListSize;
+    }
+    memcpy(*bufStart + *pos, path, pathLength + 1); /* include final '\0' */
+    *pos += pathLength + 1;
+    return 1;
+}
+
 #ifdef _WIN32
-static int UTIL_prepareFileList(const char* dirName,
-                                char** bufStart, size_t* pos,
-                                char** bufEnd, int followLinks)
+static size_t UTIL_prepareFileList(const char* dirName,
+                                   char** bufStart, size_t* pos,
+                                   size_t* bufSize, int followLinks)
 {
     char* path;
     size_t dirLength, pathLength;
-    int nbFiles = 0;
+    size_t nbFiles = 0;
     WIN32_FIND_DATAA cFile;
     HANDLE hFile;
 
     dirLength = strlen(dirName);
+    if (dirLength > (size_t)-1 - 3) {
+        free(*bufStart); *bufStart = NULL; return 0;
+    }
     path = (char*) malloc(dirLength + 3);
-    if (!path) return 0;
+    if (!path) { free(*bufStart); *bufStart = NULL; return 0; }
 
     memcpy(path, dirName, dirLength);
     path[dirLength] = '\\';
@@ -1176,8 +1218,11 @@ static int UTIL_prepareFileList(const char* dirName,
 
     do {
         size_t const fnameLength = strlen(cFile.cFileName);
+        if (fnameLength > (size_t)-1 - 2 || dirLength > (size_t)-1 - 2 - fnameLength) {
+            FindClose(hFile); free(*bufStart); *bufStart = NULL; return 0;
+        }
         path = (char*) malloc(dirLength + fnameLength + 2);
-        if (!path) { FindClose(hFile); return 0; }
+        if (!path) { FindClose(hFile); free(*bufStart); *bufStart = NULL; return 0; }
         memcpy(path, dirName, dirLength);
         path[dirLength] = '\\';
         memcpy(path+dirLength+1, cFile.cFileName, fnameLength);
@@ -1190,25 +1235,26 @@ static int UTIL_prepareFileList(const char* dirName,
         }
         if (cFile.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if ( strcmp (cFile.cFileName, "..") == 0
-              || strcmp (cFile.cFileName, ".") == 0 )
+              || strcmp (cFile.cFileName, ".") == 0 ) {
+                free(path);
                 continue;
+            }
             /* Recursively call "UTIL_prepareFileList" with the new path. */
-            nbFiles += UTIL_prepareFileList(path, bufStart, pos, bufEnd, followLinks);
-            if (*bufStart == NULL) { free(path); FindClose(hFile); return 0; }
+            {   size_t const subFiles = UTIL_prepareFileList(path, bufStart, pos, bufSize, followLinks);
+                if (*bufStart == NULL || subFiles > (size_t)-1 - nbFiles) {
+                    free(path); FindClose(hFile); free(*bufStart); *bufStart = NULL; return 0;
+                }
+                nbFiles += subFiles;
+            }
         } else if ( (cFile.dwFileAttributes & FILE_ATTRIBUTE_NORMAL)
                  || (cFile.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)
                  || (cFile.dwFileAttributes & FILE_ATTRIBUTE_COMPRESSED) ) {
-            if (*bufStart + *pos + pathLength >= *bufEnd) {
-                ptrdiff_t const newListSize = (*bufEnd - *bufStart) + LIST_SIZE_INCREASE;
-                *bufStart = (char*)UTIL_realloc(*bufStart, newListSize);
-                if (*bufStart == NULL) { free(path); FindClose(hFile); return 0; }
-                *bufEnd = *bufStart + newListSize;
+            if (!UTIL_appendPathToBuf(bufStart, pos, bufSize, path, pathLength)
+             || nbFiles == (size_t)-1) {
+                free(path); FindClose(hFile); free(*bufStart); *bufStart = NULL; return 0;
             }
-            if (*bufStart + *pos + pathLength < *bufEnd) {
-                memcpy(*bufStart + *pos, path, pathLength+1 /* include final \0 */);
-                *pos += pathLength + 1;
-                nbFiles++;
-        }   }
+            nbFiles++;
+        }
         free(path);
     } while (FindNextFileA(hFile, &cFile));
 
@@ -1218,14 +1264,14 @@ static int UTIL_prepareFileList(const char* dirName,
 
 #elif defined(__linux__) || (PLATFORM_POSIX_VERSION >= 200112L)  /* opendir, readdir require POSIX.1-2001 */
 
-static int UTIL_prepareFileList(const char *dirName,
-                                char** bufStart, size_t* pos,
-                                char** bufEnd, int followLinks)
+static size_t UTIL_prepareFileList(const char *dirName,
+                                   char** bufStart, size_t* pos,
+                                   size_t* bufSize, int followLinks)
 {
     DIR* dir;
     struct dirent * entry;
     size_t dirLength;
-    int nbFiles = 0;
+    size_t nbFiles = 0;
 
     if (!(dir = opendir(dirName))) {
         UTIL_DISPLAYLEVEL(1, "Cannot open directory '%s': %s\n", dirName, strerror(errno));
@@ -1240,8 +1286,11 @@ static int UTIL_prepareFileList(const char *dirName,
         if (strcmp (entry->d_name, "..") == 0 ||
             strcmp (entry->d_name, ".") == 0) continue;
         fnameLength = strlen(entry->d_name);
+        if (fnameLength > (size_t)-1 - 2 || dirLength > (size_t)-1 - 2 - fnameLength) {
+            closedir(dir); free(*bufStart); *bufStart = NULL; return 0;
+        }
         path = (char*) malloc(dirLength + fnameLength + 2);
-        if (!path) { closedir(dir); return 0; }
+        if (!path) { closedir(dir); free(*bufStart); *bufStart = NULL; return 0; }
         memcpy(path, dirName, dirLength);
 
         path[dirLength] = '/';
@@ -1256,24 +1305,18 @@ static int UTIL_prepareFileList(const char *dirName,
         }
 
         if (UTIL_isDirectory(path)) {
-            nbFiles += UTIL_prepareFileList(path, bufStart, pos, bufEnd, followLinks);  /* Recursively call "UTIL_prepareFileList" with the new path. */
-            if (*bufStart == NULL) { free(path); closedir(dir); return 0; }
-        } else {
-            if (*bufStart + *pos + pathLength >= *bufEnd) {
-                ptrdiff_t newListSize = (*bufEnd - *bufStart) + LIST_SIZE_INCREASE;
-                assert(newListSize >= 0);
-                *bufStart = (char*)UTIL_realloc(*bufStart, (size_t)newListSize);
-                if (*bufStart != NULL) {
-                    *bufEnd = *bufStart + newListSize;
-                } else {
-                    free(path); closedir(dir); return 0;
-                }
+            size_t const subFiles = UTIL_prepareFileList(path, bufStart, pos, bufSize, followLinks);
+            if (*bufStart == NULL || subFiles > (size_t)-1 - nbFiles) {
+                free(path); closedir(dir); free(*bufStart); *bufStart = NULL; return 0;
             }
-            if (*bufStart + *pos + pathLength < *bufEnd) {
-                memcpy(*bufStart + *pos, path, pathLength + 1);  /* with final \0 */
-                *pos += pathLength + 1;
-                nbFiles++;
-        }   }
+            nbFiles += subFiles;
+        } else {
+            if (!UTIL_appendPathToBuf(bufStart, pos, bufSize, path, pathLength)
+             || nbFiles == (size_t)-1) {
+                free(path); closedir(dir); free(*bufStart); *bufStart = NULL; return 0;
+            }
+            nbFiles++;
+        }
         free(path);
         errno = 0; /* clear errno after UTIL_isDirectory, UTIL_prepareFileList */
     }
@@ -1289,11 +1332,11 @@ static int UTIL_prepareFileList(const char *dirName,
 
 #else
 
-static int UTIL_prepareFileList(const char *dirName,
-                                char** bufStart, size_t* pos,
-                                char** bufEnd, int followLinks)
+static size_t UTIL_prepareFileList(const char *dirName,
+                                   char** bufStart, size_t* pos,
+                                   size_t* bufSize, int followLinks)
 {
-    (void)bufStart; (void)bufEnd; (void)pos; (void)followLinks;
+    (void)bufStart; (void)bufSize; (void)pos; (void)followLinks;
     UTIL_DISPLAYLEVEL(1, "Directory %s ignored (compiled without _WIN32 or _POSIX_C_SOURCE) \n", dirName);
     return 0;
 }
@@ -1321,6 +1364,37 @@ const char* UTIL_getFileExtension(const char* infilename)
    return extension;
 }
 
+static int isPathSep(char c)
+{
+#if defined(_WIN32)
+    return (c == '\\') || (c == '/');
+#else
+    return c == PATH_SEP;
+#endif
+}
+
+static char* findNextPathSep(char* p)
+{
+    while (*p != '\0') {
+        if (isPathSep(*p)) return p;
+        p++;
+    }
+    return NULL;
+}
+
+static char* findLastPathSep(char* pathname)
+{
+    char* last = NULL;
+    char* p = pathname;
+    while (*p != '\0') {
+        if (isPathSep(*p)) last = p;
+        p++;
+    }
+    return last;
+}
+
+static const char* trimPath(const char *pathname);
+
 static int pathnameHas2Dots(const char *pathname)
 {
     /* We need to figure out whether any ".." present in the path is a whole
@@ -1335,20 +1409,23 @@ static int pathnameHas2Dots(const char *pathname)
             return 0;
         }
 
-        if ((needle == pathname || needle[-1] == PATH_SEP)
-         && (needle[2] == '\0' || needle[2] == PATH_SEP)) {
+        if ((needle == pathname || isPathSep(needle[-1]))
+         && (needle[2] == '\0' || isPathSep(needle[2]))) {
             return 1;
         }
 
         /* increment so we search for the next match */
         needle++;
-    };
-    return 0;
+    }
 }
 
 static int isFileNameValidForMirroredOutput(const char *filename)
 {
-    return !pathnameHas2Dots(filename);
+    if (filename == NULL || filename[0] == '\0')
+        return 0;
+    if (pathnameHas2Dots(filename))
+        return 0;
+    return trimPath(filename)[0] != '\0';
 }
 
 
@@ -1391,26 +1468,34 @@ static void convertPathnameToDirName(char *pathname)
     /* get dir name from pathname similar to 'dirname()' */
     assert(pathname != NULL);
 
-    /* remove trailing '/' chars */
+    /* remove trailing separator chars, preserving a root separator */
     len = strlen(pathname);
-    assert(len > 0);
-    while (pathname[len] == PATH_SEP) {
-        pathname[len] = '\0';
+    while (len > 1 && isPathSep(pathname[len - 1])) {
+        pathname[len - 1] = '\0';
         len--;
     }
     if (len == 0) return;
+    if (len == 1 && isPathSep(pathname[0])) return;
 
     /* if input is a single file, return '.' instead. i.e.
      * "xyz/abc/file.txt" => "xyz/abc"
        "./file.txt"       => "."
        "file.txt"         => "."
+       "/file.txt"        => "/"
      */
-    pos = strrchr(pathname, PATH_SEP);
+    pos = findLastPathSep(pathname);
     if (pos == NULL) {
         pathname[0] = '.';
         pathname[1] = '\0';
     } else {
-        *pos = '\0';
+        while (pos > pathname && isPathSep(pos[-1])) {
+            pos--;
+        }
+        if (pos == pathname) {
+            pos[1] = '\0';
+        } else {
+            *pos = '\0';
+        }
     }
 }
 
@@ -1418,8 +1503,8 @@ static void convertPathnameToDirName(char *pathname)
 static const char* trimLeadingRootChar(const char *pathname)
 {
     assert(pathname != NULL);
-    if (pathname[0] == PATH_SEP)
-        return pathname + 1;
+    while (isPathSep(pathname[0]))
+        pathname++;
     return pathname;
 }
 
@@ -1427,8 +1512,8 @@ static const char* trimLeadingRootChar(const char *pathname)
 static const char* trimLeadingCurrentDirConst(const char *pathname)
 {
     assert(pathname != NULL);
-    if ((pathname[0] == '.') && (pathname[1] == PATH_SEP))
-        return pathname + 2;
+    while ((pathname[0] == '.') && isPathSep(pathname[1]))
+        pathname += 2;
     return pathname;
 }
 
@@ -1447,8 +1532,13 @@ trimLeadingCurrentDir(char *pathname)
 /* remove leading './' or '/' chars here */
 static const char * trimPath(const char *pathname)
 {
-    return trimLeadingRootChar(
-            trimLeadingCurrentDirConst(pathname));
+    const char* prev;
+    do {
+        prev = pathname;
+        pathname = trimLeadingRootChar(
+                trimLeadingCurrentDirConst(pathname));
+    } while (pathname != prev);
+    return pathname;
 }
 
 static char* mallocAndJoin2Dir(const char *dir1, const char *dir2)
@@ -1458,6 +1548,7 @@ static char* mallocAndJoin2Dir(const char *dir1, const char *dir2)
         const size_t dir2Size = strlen(dir2);
         char *outDirBuffer, *buffer;
 
+        CONTROL(dir2Size <= (size_t)-1 - 2 && dir1Size <= (size_t)-1 - 2 - dir2Size);
         outDirBuffer = (char *) malloc(dir1Size + dir2Size + 2);
         CONTROL(outDirBuffer != NULL);
 
@@ -1465,7 +1556,7 @@ static char* mallocAndJoin2Dir(const char *dir1, const char *dir2)
         outDirBuffer[dir1Size] = '\0';
 
         buffer = outDirBuffer + dir1Size;
-        if (dir1Size > 0 && *(buffer - 1) != PATH_SEP) {
+        if (dir1Size > 0 && dir2Size > 0 && !isPathSep(*(buffer - 1))) {
             *buffer = PATH_SEP;
             buffer++;
         }
@@ -1511,13 +1602,14 @@ mirrorSrcDirRecursive(char* srcDirName, const char* outDirName)
     char* pp = trimLeadingCurrentDir(srcDirName);
     char* sp = NULL;
 
-    while ((sp = strchr(pp, PATH_SEP)) != NULL) {
+    while ((sp = findNextPathSep(pp)) != NULL) {
         if (sp != pp) {
+            char const savedSep = *sp;
             *sp = '\0';
             status = mirrorSrcDir(srcDirName, outDirName);
+            *sp = savedSep;
             if (status != 0)
                 return status;
-            *sp = PATH_SEP;
         }
         pp = sp + 1;
     }
@@ -1539,7 +1631,7 @@ firstIsParentOrSameDirOfSecond(const char* firstDir, const char* secondDir)
     size_t firstDirLen  = strlen(firstDir),
            secondDirLen = strlen(secondDir);
     return firstDirLen <= secondDirLen &&
-           (secondDir[firstDirLen] == PATH_SEP || secondDir[firstDirLen] == '\0') &&
+           (isPathSep(secondDir[firstDirLen]) || secondDir[firstDirLen] == '\0') &&
            0 == strncmp(firstDir, secondDir, firstDirLen);
 }
 
@@ -1601,7 +1693,12 @@ makeMirroredDestDirs(char** srcFileNames, unsigned nbFile, const char* outDirNam
 void UTIL_mirrorSourceFilesDirectories(const char** inFileNames, unsigned int nbFile, const char* outDirName)
 {
     unsigned int i = 0, validFilenamesNr = 0;
-    char** srcFileNames = (char **) malloc(nbFile * sizeof (char *));
+    char** srcFileNames;
+
+    if (nbFile == 0)
+        return;
+
+    srcFileNames = (char **) malloc((size_t)nbFile * sizeof (char *));
     CONTROL(srcFileNames != NULL);
 
     /* check input filenames is valid */
@@ -1626,9 +1723,9 @@ void UTIL_mirrorSourceFilesDirectories(const char** inFileNames, unsigned int nb
 FileNamesTable*
 UTIL_createExpandedFNT(const char* const* inputNames, size_t nbIfns, int followLinks)
 {
-    unsigned nbFiles;
-    char* buf = (char*)malloc(LIST_SIZE_INCREASE);
-    char* bufend = buf + LIST_SIZE_INCREASE;
+    size_t nbFiles;
+    size_t bufSize = LIST_SIZE_INCREASE;
+    char* buf = (char*)malloc(bufSize);
 
     if (!buf) return NULL;
 
@@ -1636,33 +1733,36 @@ UTIL_createExpandedFNT(const char* const* inputNames, size_t nbIfns, int followL
         for (ifnNb=0, pos=0, nbFiles=0; ifnNb<nbIfns; ifnNb++) {
             if (!UTIL_isDirectory(inputNames[ifnNb])) {
                 size_t const len = strlen(inputNames[ifnNb]);
-                if (buf + pos + len >= bufend) {
-                    ptrdiff_t newListSize = (bufend - buf) + LIST_SIZE_INCREASE;
-                    assert(newListSize >= 0);
-                    buf = (char*)UTIL_realloc(buf, (size_t)newListSize);
-                    if (!buf) return NULL;
-                    bufend = buf + newListSize;
+                if (!UTIL_appendPathToBuf(&buf, &pos, &bufSize, inputNames[ifnNb], len)
+                 || nbFiles == (size_t)-1) {
+                    free(buf);
+                    return NULL;
                 }
-                if (buf + pos + len < bufend) {
-                    memcpy(buf+pos, inputNames[ifnNb], len+1);  /* including final \0 */
-                    pos += len + 1;
-                    nbFiles++;
-                }
+                nbFiles++;
             } else {
-                nbFiles += (unsigned)UTIL_prepareFileList(inputNames[ifnNb], &buf, &pos, &bufend, followLinks);
-                if (buf == NULL) return NULL;
+                size_t const subFiles = UTIL_prepareFileList(inputNames[ifnNb], &buf, &pos, &bufSize, followLinks);
+                if (buf == NULL || subFiles > (size_t)-1 - nbFiles) {
+                    free(buf);
+                    return NULL;
+                }
+                nbFiles += subFiles;
     }   }   }
 
     /* note : even if nbFiles==0, function returns a valid, though empty, FileNamesTable* object */
 
     {   size_t ifnNb, pos;
         size_t const fntCapacity = nbFiles + 1;  /* minimum 1, allows adding one reference, typically stdin */
-        const char** const fileNamesTable = (const char**)malloc(fntCapacity * sizeof(*fileNamesTable));
+        const char** fileNamesTable;
+        if (fntCapacity == 0 || fntCapacity > (size_t)-1 / sizeof(*fileNamesTable)) {
+            free(buf);
+            return NULL;
+        }
+        fileNamesTable = (const char**)malloc(fntCapacity * sizeof(*fileNamesTable));
         if (!fileNamesTable) { free(buf); return NULL; }
 
         for (ifnNb = 0, pos = 0; ifnNb < nbFiles; ifnNb++) {
+            if (pos >= bufSize) { free(buf); free((void*)fileNamesTable); return NULL; }
             fileNamesTable[ifnNb] = buf + pos;
-            if (buf + pos > bufend) { free(buf); free((void*)fileNamesTable); return NULL; }
             pos += strlen(fileNamesTable[ifnNb]) + 1;
         }
         return UTIL_assembleFileNamesTable2(fileNamesTable, nbFiles, fntCapacity, buf);
