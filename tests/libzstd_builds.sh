@@ -113,3 +113,26 @@ isPresent "zdict.o"
 isPresent "zstd_v07.o"
 mustBeAbsent "zbuff_compress.o"
 $RM $DIR/../lib/libzstd.a tmplog
+
+# exported symbols : the whole API by default,
+# only the stable API when the experimental API is hidden.
+# The API comes from the headers : -aux-info (GCC) lists their function declarations.
+$ECHO "testing exported symbols"
+printf '#include "zstd.h"\n#include "zdict.h"\n#include "zstd_errors.h"\n' > tmpapi.c
+listDeclared() {
+    ${CC:-cc} -I$DIR/../lib "$@" -fsyntax-only -aux-info tmpaux tmpapi.c
+    sed -n 's/^\/\*[^*]*\*\/ //; s/ (.*//; s/.*[ *]//p' tmpaux | $GREP -E '^(ZSTD|ZDICT)_' | LC_ALL=C sort -u
+}
+listExported() {
+    nm -D --defined-only $DIR/../lib/libzstd.so.*.*.* | awk '{ print $NF }' | LC_ALL=C sort -u
+}
+listDeclared > tmpstable
+listDeclared -DZSTD_STATIC_LINKING_ONLY -DZDICT_STATIC_LINKING_ONLY > tmpall
+CFLAGS= make -C $DIR/../lib libzstd > $INTOVOID
+listExported > tmpexported
+diff tmpall tmpexported || die "libzstd.so should export the whole API"
+$RM $DIR/../lib/libzstd.so*
+CFLAGS= make -C $DIR/../lib libzstd MOREFLAGS="-DZSTDLIB_STATIC_API=ZSTDLIB_HIDDEN -DZDICTLIB_STATIC_API=ZDICTLIB_HIDDEN" > $INTOVOID
+listExported > tmpexported
+diff tmpstable tmpexported || die "with the experimental API hidden, libzstd.so should export only the stable API"
+$RM $DIR/../lib/libzstd.so* tmpapi.c tmpaux tmpstable tmpall tmpexported
