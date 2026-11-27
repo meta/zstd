@@ -107,6 +107,12 @@ ZSTD_HIDE_ASM_FUNCTION(_HUF_decompress4X1_usingDTable_internal_fast_asm_loop)
 #define vard2  r10d
 #define vard3  r11d
 
+/* 8-bit bits registers */
+#define bits0b bpl
+#define bits1b dl
+#define bits2b r12b
+#define bits3b r13b
+
 /* Calls X(N) for each stream 0, 1, 2, 3. */
 #define FOR_EACH_STREAM(X) \
     X(0);                  \
@@ -644,8 +650,23 @@ LOCAL_LABEL(4X2_compute_olimit):
     shlxq %r15, %bits##n, %bits##n; \
     addq %rax, %op##n
 
+/* For the 5th lookup, overlap tzcntq with the table loads instead of shifting
+ * bits[n] and running bsfq during reload. Before this step ctz(bits[n]) <= 52
+ * (initial <= 8, plus 4 lookups <= 44) and nbBits <= 11, so bits[n] != 0 and
+ * the 8-bit add cannot overflow (sum <= 63).
+ */
+#define DECODE_LAST(n)              \
+    movq %bits##n, %rax;            \
+    shrq $53, %rax;                 \
+    tzcntq %bits##n, %bits##n;      \
+    movzwl 0(%dtable,%rax,4),%r8d;  \
+    movzbl 2(%dtable,%rax,4),%r15d; \
+    movzbl 3(%dtable,%rax,4),%eax;  \
+    movw %r8w, (%op##n);            \
+    addb %r15b, %bits##n##b;        \
+    addq %rax, %op##n
+
 #define RELOAD_BITS(n)              \
-    bsfq %bits##n, %bits##n;        \
     movq %bits##n, %rax;            \
     shrq $3, %bits##n;              \
     andq $7, %rax;                  \
@@ -668,7 +689,7 @@ LOCAL_LABEL(4X2_loop_body):
     FOR_EACH_STREAM_WITH_INDEX(DECODE, 1)
     FOR_EACH_STREAM_WITH_INDEX(DECODE, 2)
     FOR_EACH_STREAM_WITH_INDEX(DECODE, 3)
-    FOR_EACH_STREAM_WITH_INDEX(DECODE, 4)
+    FOR_EACH_STREAM(DECODE_LAST)
 
     /* Reload r8 */
     movq 0(%rsp), %r8
@@ -680,6 +701,7 @@ LOCAL_LABEL(4X2_loop_body):
     jmp LOCAL_LABEL(4X2_compute_olimit)
 
 #undef DECODE
+#undef DECODE_LAST
 #undef RELOAD_BITS
 LOCAL_LABEL(4X2_exit):
     addq $8, %rsp
