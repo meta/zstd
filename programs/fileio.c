@@ -1555,6 +1555,8 @@ static cRess_t FIO_createCResources(FIO_prefs_t* const prefs,
 #endif
     /* dictionary */
     if (prefs->patchFromMode) {
+        /* the pre-splitter makes patches larger */
+        CHECK( ZSTD_CCtx_setParameter(ress.cctx, ZSTD_c_blockSplitterLevel, 1 /* no split */) );
         CHECK( ZSTD_CCtx_refPrefix(ress.cctx, ress.dict.dictBuffer, ress.dict.dictBufferSize) );
     } else {
         CHECK( ZSTD_CCtx_loadDictionary_byReference(ress.cctx, ress.dict.dictBuffer, ress.dict.dictBufferSize) );
