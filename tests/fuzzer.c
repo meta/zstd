@@ -6721,9 +6721,9 @@ static int basicUnitTests(U32 const seed, double compressibility)
         {
             /* Simplified repro for T283341343 - relies on ASAN to catch OOB read.
              * Original bug: probe does idx &= mask; idx++ -> idx can become 64 OOB.
-             * IDs 3 and 47 both hash XXH64(id) & 63 == 63 (last slot).
-             * Setup: register dict 3 (occupies slot 63), then decompress frame
-             * whose header dictID is patched to 47 (collides to same slot).
+             * IDs 3 and 47 in little-endian byte order both hash to slot 63.
+             * Setup: register the victim dict (occupies slot 63), then decompress
+             * a frame whose header dictID collides with the same slot.
              * Buggy getDDict reads slot 64 OOB. With ASAN=1 this is reported as
              * heap-buffer-overflow even though glibc would see 0 and return
              * "dictionary mismatch". No custom allocator needed.
@@ -6746,8 +6746,10 @@ static int basicUnitTests(U32 const seed, double compressibility)
             int pos;
             int i;
 
-            victimID = 3;
-            attackerID = 47;
+            /* XXH64 hashes native ID bytes. Keep those bytes identical on
+             * little- and big-endian targets to preserve the collisions. */
+            victimID = MEM_isLittleEndian() ? 3 : 0x03000000;
+            attackerID = MEM_isLittleEndian() ? 47 : 0x2F000000;
             victimIdx = XXH64(&victimID, sizeof(victimID), 0) & 63;
             attackerIdx = XXH64(&attackerID, sizeof(attackerID), 0) & 63;
             if (victimIdx != 63 || attackerIdx != 63) {
@@ -6786,7 +6788,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
                 goto _oob_error2;
             }
 
-            /* Patch dictID in frame header to attackerID (47) */
+            /* Patch dictID in frame header to attackerID */
             frame = (BYTE*)compressedBuffer;
             fhd = frame[4];
             dictIDSizeCode = fhd & 3;
@@ -6830,7 +6832,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
 
         DISPLAYLEVEL(3, "test%3i : DDict hashset OOB write T283341343 (ASAN) : ", testNb++);
         {
-            /* Write path version of above: same colliding IDs 3 and 47 → slot 63.
+            /* Write path version of above: same colliding ID bytes -> slot 63.
              * Insertion does while(table[idx]!=NULL) { idx&=mask; idx++; }
              * Second insertion with colliding ID should wrap to slot 0, but buggy code
              * writes to slot 64 OOB (8-byte write). With ASAN this is heap-buffer-overflow
@@ -6846,8 +6848,8 @@ static int basicUnitTests(U32 const seed, double compressibility)
             ZSTD_DDict* victimDDict2;
             ZSTD_DDict* attackerDDict2;
 
-            victimID2 = 3;
-            attackerID2 = 47;
+            victimID2 = MEM_isLittleEndian() ? 3 : 0x03000000;
+            attackerID2 = MEM_isLittleEndian() ? 47 : 0x2F000000;
             vIdx2 = XXH64(&victimID2, sizeof(victimID2), 0) & 63;
             aIdx2 = XXH64(&attackerID2, sizeof(attackerID2), 0) & 63;
             if (vIdx2 != 63 || aIdx2 != 63) {
