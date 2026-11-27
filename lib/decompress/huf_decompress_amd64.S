@@ -70,8 +70,7 @@ ZSTD_HIDE_ASM_FUNCTION(_HUF_decompress4X1_usingDTable_internal_fast_asm_loop)
 .text
 
 /* Sets up register mappings for clarity.
- * op[], bits[], dtable & ip[0] each get their own register.
- * ip[1,2,3] & olimit alias var[].
+ * op[], ip[], bits[], dtable & olimit each get their own register.
  * %rax is a scratch register.
  */
 
@@ -92,20 +91,11 @@ ZSTD_HIDE_ASM_FUNCTION(_HUF_decompress4X1_usingDTable_internal_fast_asm_loop)
 #define dtable r14
 #define olimit r15
 
-/* var[] aliases ip[1,2,3] & olimit
- * ip[1,2,3] are saved every iteration.
- * olimit is only used in compute_olimit.
- */
-#define var0   r15
-#define var1   r9
-#define var2   r10
-#define var3   r11
-
-/* 32-bit var registers */
-#define vard0  r15d
-#define vard1  r9d
-#define vard2  r10d
-#define vard3  r11d
+/* 8-bit bits registers */
+#define bits0b bpl
+#define bits1b dl
+#define bits2b r12b
+#define bits3b r13b
 
 /* Calls X(N) for each stream 0, 1, 2, 3. */
 #define FOR_EACH_STREAM(X) \
@@ -202,11 +192,9 @@ HUF_decompress4X1_usingDTable_internal_fast_asm_loop:
     .cfi_def_cfa_offset 144
     push 112(%rax) /* oend */
     .cfi_def_cfa_offset 152
-    push %olimit   /* olimit space */
-    .cfi_def_cfa_offset 160
 
-    subq $24, %rsp
-    .cfi_def_cfa_offset 184
+    subq $16, %rsp
+    .cfi_def_cfa_offset 168
 
 LOCAL_LABEL(4X1_compute_olimit):
     /* Computes how many iterations we can do safely
@@ -217,7 +205,7 @@ LOCAL_LABEL(4X1_compute_olimit):
     movq %rbx, 0(%rsp)
     movq %rdx, 8(%rsp)
 
-    movq 32(%rsp), %rax /* rax = oend */
+    movq 16(%rsp), %rax /* rax = oend */
     subq %op3,    %rax  /* rax = oend - op3 */
 
     /* r15 = (oend - op3) / 5 */
@@ -227,7 +215,7 @@ LOCAL_LABEL(4X1_compute_olimit):
     shrq $2, %r15
 
     movq %ip0,     %rax /* rax = ip0 */
-    movq 40(%rsp), %rdx /* rdx = ilowest */
+    movq 24(%rsp), %rdx /* rdx = ilowest */
     subq %rdx,     %rax /* rax = ip0 - ilowest */
     movq %rax,     %rbx /* rbx = ip0 - ilowest */
 
@@ -243,19 +231,8 @@ LOCAL_LABEL(4X1_compute_olimit):
     cmpq %rdx, %r15
     cmova %rdx, %r15
 
-    /* r15 = r15 * 5 */
-    leaq (%r15, %r15, 4), %r15
-
-    /* olimit = op3 + r15 */
-    addq %op3, %olimit
-
     movq 8(%rsp), %rdx
     movq 0(%rsp), %rbx
-
-    /* If (op3 + 20 > olimit) */
-    movq %op3, %rax    /* rax = op3 */
-    cmpq %rax, %olimit /* op3 == olimit */
-    je LOCAL_LABEL(4X1_exit)
 
     /* If (ip1 < ip0) go to exit */
     cmpq %ip0, %ip1
@@ -269,124 +246,164 @@ LOCAL_LABEL(4X1_compute_olimit):
     cmpq %ip2, %ip3
     jb LOCAL_LABEL(4X1_exit)
 
-/* Reads top 11 bits from bits[n]
- * Loads dt[bits[n]] into var[n]
- */
-#define GET_NEXT_DELT(n)                \
-    movq $53, %var##n;                  \
-    shrxq %var##n, %bits##n, %var##n;   \
-    movzwl (%dtable,%var##n,2),%vard##n
+    /* If no full group fits, leave the remainder to the C tail. */
+    testq %r15, %r15
+    je LOCAL_LABEL(4X1_exit)
 
-/* var[n] must contain the DTable entry computed with GET_NEXT_DELT
- * Moves var[n] to %rax
- * bits[n] <<= var[n] & 63
- * op[n][idx] = %rax >> 8
- * %ah is a way to access bits [8, 16) of %rax
- */
-#define DECODE_FROM_DELT(n, idx)       \
-    movq %var##n, %rax;                \
-    shlxq %var##n, %bits##n, %bits##n; \
+    /* %r15 carries both the loop counter and the shift constant: the trip
+     * count lives above bit 8 and 53 sits in the low byte (shrxq masks the
+     * shift count to 6 bits, so %r15 & 63 is always 53). The loop decrements
+     * with `subq $256` and tests the carry flag instead of reloading olimit
+     * from the stack. The preamble and postamble together emit one group,
+     * hence iters-1; the extra -1 makes the borrow out of the count signal
+     * the final iteration.
+     */
+    leaq -2(%r15), %r15
+    shlq $8, %r15
+    movb $53, %r15b
+
+#define DECODE_STREAM(n, idx)              \
+    shrxq %r15, %bits##n, %rax;            \
+    movzwl (%dtable, %rax, 2), %eax;       \
+    shlxq %rax, %bits##n, %bits##n;        \
     movb %ah, idx(%op##n)
 
-/* Assumes GET_NEXT_DELT has been called.
- * Calls DECODE_FROM_DELT then GET_NEXT_DELT
+/* For the 5th symbol, overlap tzcntq with the table load instead of shifting
+ * bits[n] and running bsfq during reload. Before this step ctz(bits[n]) <= 52
+ * (initial <= 8, plus 4 symbols <= 44) and nbBits <= 11, so bits[n] != 0 and
+ * the 8-bit add cannot overflow (sum <= 63).
  */
-#define DECODE_AND_GET_NEXT(n, idx) \
-    DECODE_FROM_DELT(n, idx);       \
-    GET_NEXT_DELT(n)                \
+#define DECODE_STREAM_LAST(n, idx)         \
+    shrxq %r15, %bits##n, %rax;            \
+    tzcntq %bits##n, %bits##n;             \
+    movzwl (%dtable, %rax, 2), %eax;       \
+    movb %ah, idx(%op##n);                 \
+    addb %al, %bits##n##b
 
-/* // ctz & nbBytes is stored in bits[n]
- * // nbBits is stored in %rax
- * ctz  = CTZ[bits[n]]
- * nbBits  = ctz & 7
- * nbBytes = ctz >> 3
- * op[n]  += 5
- * ip[n]  -= nbBytes
- * // Note: x86-64 is little-endian ==> no bswap
- * bits[n] = MEM_readST(ip[n]) | 1
- * bits[n] <<= nbBits
+#define RELOAD_STREAM(n)                   \
+    movq %bits##n, %rax;                   \
+    andq $7, %rax;                         \
+    shrq $3, %bits##n;                     \
+    subq %bits##n, %ip##n;                 \
+    movq (%ip##n), %bits##n;               \
+    orq $1, %bits##n;                      \
+    shlxq %rax, %bits##n, %bits##n
+
+/* Software-pipeline the 4 streams: each stream is skewed one step further into
+ * its 5-symbol group than the next, placing three independent decodes between
+ * a stream's terminal decode and its reload. Because %op[n] is advanced ahead
+ * of the last byte stored for that group, stores use negative displacements.
+ *
+ * The preamble fills the pipeline and the postamble drains it; together they
+ * account for one group, so the hot loop runs iters-1 times.
  */
-#define RELOAD_BITS(n)             \
-    bsfq %bits##n, %bits##n;       \
-    movq %bits##n, %rax;           \
-    andq $7, %rax;                 \
-    shrq $3, %bits##n;             \
-    leaq 5(%op##n), %op##n;        \
-    subq %bits##n, %ip##n;         \
-    movq (%ip##n), %bits##n;       \
-    orq $1, %bits##n;              \
-    shlx %rax, %bits##n, %bits##n
+    /* Round 0 */
+    DECODE_STREAM(0, 0)
+    DECODE_STREAM(1, 0)
+    DECODE_STREAM(2, 0)
 
-    /* Store clobbered variables on the stack */
-    movq %olimit, 24(%rsp)
-    movq %ip1, 0(%rsp)
-    movq %ip2, 8(%rsp)
-    movq %ip3, 16(%rsp)
+    /* Round 1 */
+    DECODE_STREAM(0, 1)
+    DECODE_STREAM(1, 1)
+    DECODE_STREAM(2, 1)
+    addq $5, %op2
 
-    /* Call GET_NEXT_DELT for each stream */
-    FOR_EACH_STREAM(GET_NEXT_DELT)
+    /* Round 2 */
+    DECODE_STREAM(0, 2)
+    DECODE_STREAM(1, 2)
+    addq $5, %op1
+
+    /* Round 3 */
+    DECODE_STREAM(0, 3)
+    addq $5, %op0
+
+    /* Only one group fits: skip the hot loop and drain immediately. */
+    testq %r15, %r15
+    js LOCAL_LABEL(4X1_postamble)
 
     .p2align 6
 
 LOCAL_LABEL(4X1_loop_body):
-    /* Decode 5 symbols in each of the 4 streams (20 total)
-     * Must have called GET_NEXT_DELT for each stream
+    /* Step 0 */
+    DECODE_STREAM_LAST(0, -1)
+    addq $5, %op0
+    DECODE_STREAM(1, -2)
+    DECODE_STREAM(2, -3)
+    DECODE_STREAM(3, 0)
+
+    /* Step 1 */
+    RELOAD_STREAM(0)
+    DECODE_STREAM_LAST(1, -1)
+    addq $5, %op1
+    DECODE_STREAM(2, -2)
+    DECODE_STREAM(3, 1)
+
+    /* Step 2 */
+    DECODE_STREAM(0, -5)
+    RELOAD_STREAM(1)
+    DECODE_STREAM_LAST(2, -1)
+    addq $5, %op2
+    DECODE_STREAM(3, 2)
+
+    /* Step 3 */
+    DECODE_STREAM(0, -4)
+    DECODE_STREAM(1, -5)
+    RELOAD_STREAM(2)
+    DECODE_STREAM(3, 3)
+    addq $5, %op3
+
+    /* Step 4 */
+    DECODE_STREAM(0, -3)
+    DECODE_STREAM(1, -4)
+    DECODE_STREAM(2, -5)
+    DECODE_STREAM_LAST(3, -1)
+
+    /* Step 5 */
+    DECODE_STREAM(0, -2)
+    DECODE_STREAM(1, -3)
+    DECODE_STREAM(2, -4)
+    RELOAD_STREAM(3)
+
+    subq $256, %r15
+    jnc LOCAL_LABEL(4X1_loop_body)
+
+LOCAL_LABEL(4X1_postamble):
+    /* Drain the pipeline: finish each stream's group without starting a
+     * new one, unwinding the skew introduced by the preamble.
      */
-    FOR_EACH_STREAM_WITH_INDEX(DECODE_AND_GET_NEXT, 0)
-    FOR_EACH_STREAM_WITH_INDEX(DECODE_AND_GET_NEXT, 1)
-    FOR_EACH_STREAM_WITH_INDEX(DECODE_AND_GET_NEXT, 2)
-    FOR_EACH_STREAM_WITH_INDEX(DECODE_AND_GET_NEXT, 3)
-    FOR_EACH_STREAM_WITH_INDEX(DECODE_FROM_DELT, 4)
+    DECODE_STREAM_LAST(0, -1)
+    DECODE_STREAM(1, -2)
+    DECODE_STREAM(2, -3)
+    DECODE_STREAM(3, 0)
 
-    /* Load ip[1,2,3] from stack (var[] aliases them)
-     * ip[] is needed for RELOAD_BITS
-     * Each will be stored back to the stack after RELOAD
-     */
-    movq 0(%rsp), %ip1
-    movq 8(%rsp), %ip2
-    movq 16(%rsp), %ip3
+    RELOAD_STREAM(0)
+    DECODE_STREAM_LAST(1, -1)
+    DECODE_STREAM(2, -2)
+    DECODE_STREAM(3, 1)
 
-    /* Reload each stream & fetch the next table entry
-     * to prepare for the next iteration
-     */
-    RELOAD_BITS(0)
-    GET_NEXT_DELT(0)
+    RELOAD_STREAM(1)
+    DECODE_STREAM_LAST(2, -1)
+    DECODE_STREAM(3, 2)
 
-    RELOAD_BITS(1)
-    movq %ip1, 0(%rsp)
-    GET_NEXT_DELT(1)
+    RELOAD_STREAM(2)
+    DECODE_STREAM(3, 3)
 
-    RELOAD_BITS(2)
-    movq %ip2, 8(%rsp)
-    GET_NEXT_DELT(2)
+    DECODE_STREAM_LAST(3, 4)
 
-    RELOAD_BITS(3)
-    movq %ip3, 16(%rsp)
-    GET_NEXT_DELT(3)
+    RELOAD_STREAM(3)
+    addq $5, %op3
 
-    /* If op3 < olimit: continue the loop */
-    cmp %op3, 24(%rsp)
-    ja LOCAL_LABEL(4X1_loop_body)
-
-    /* Reload ip[1,2,3] from stack */
-    movq 0(%rsp), %ip1
-    movq 8(%rsp), %ip2
-    movq 16(%rsp), %ip3
-
-    /* Re-compute olimit */
+    /* Re-arm the iteration count for the next batch. */
     jmp LOCAL_LABEL(4X1_compute_olimit)
 
-#undef GET_NEXT_DELT
-#undef DECODE_FROM_DELT
-#undef DECODE
-#undef RELOAD_BITS
+#undef DECODE_STREAM
+#undef DECODE_STREAM_LAST
+#undef RELOAD_STREAM
 LOCAL_LABEL(4X1_exit):
-    addq $24, %rsp
-    .cfi_def_cfa_offset 160
-
-    /* Restore stack (oend & olimit) */
-    pop %rax /* olimit */
+    addq $16, %rsp
     .cfi_def_cfa_offset 152
+
+    /* Restore stack */
     pop %rax /* oend */
     .cfi_def_cfa_offset 144
     pop %rax /* ilowest */
