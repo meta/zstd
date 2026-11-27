@@ -3239,7 +3239,7 @@ ZSTDLIB_STATIC_API ZSTD_nextInputType_e ZSTD_nextInputType(ZSTD_DCtx* dctx);
  * This is mainly used for Zstd's determinism test suite, which is only
  * run when this function returns 1.
  */
-ZSTDLIB_API int ZSTD_isDeterministicBuild(void);
+ZSTDLIB_STATIC_API int ZSTD_isDeterministicBuild(void);
 
 
 /* ========================================= */
