@@ -2286,7 +2286,7 @@ ZSTDLIB_STATIC_API size_t ZSTD_decompressBegin_usingDDict(ZSTD_DCtx* dctx, const
 
 <pre><b>typedef enum { ZSTDnit_frameHeader, ZSTDnit_blockHeader, ZSTDnit_block, ZSTDnit_lastBlock, ZSTDnit_checksum, ZSTDnit_skippableFrame } ZSTD_nextInputType_e;
 </b></pre><BR>
-<pre><b>int ZSTD_isDeterministicBuild(void);
+<pre><b>ZSTDLIB_STATIC_API int ZSTD_isDeterministicBuild(void);
 </b><p> Returns 1 if the library is built using standard compilation flags,
  and participates in determinism guarantees with other builds of the
  same version.
